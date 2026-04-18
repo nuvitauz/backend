@@ -313,7 +313,7 @@ export class TelegramService implements OnModuleInit {
     const KB_SHARED_PROFILE = '👤 Mening profilim';
     const KB_ADMIN_STATS = '📈 Statistika';
 
-    this.bot.hear(KB_SHARED_PROFILE, async (ctx) => {
+    this.bot.hears(KB_SHARED_PROFILE, async (ctx) => {
       const tgId = String(ctx.from?.id ?? '');
       const user = await this.prisma.user.findUnique({
         where: { userId: tgId },
@@ -331,17 +331,17 @@ export class TelegramService implements OnModuleInit {
       }
     });
 
-    this.bot.hear(KB_ADMIN_STATS, async (ctx) => {
+    this.bot.hears(KB_ADMIN_STATS, async (ctx) => {
       const tgId = String(ctx.from?.id ?? '');
       await this.replyAdminStats(ctx, tgId);
     });
 
-    this.bot.hear(KB_COURIER_NEW, async (ctx) => {
+    this.bot.hears(KB_COURIER_NEW, async (ctx) => {
       const tgId = String(ctx.from?.id ?? '');
       await this.replyCourierActiveOrders(ctx, tgId);
     });
 
-    this.bot.hear(KB_COURIER_DONE, async (ctx) => {
+    this.bot.hears(KB_COURIER_DONE, async (ctx) => {
       const tgId = String(ctx.from?.id ?? '');
       await this.replyCourierDeliveredList(ctx, tgId);
     });
