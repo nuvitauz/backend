@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -100,6 +100,16 @@ export class OrderService {
          where: { userNumber },
          orderBy: { createdAt: 'desc' }
      });
+  }
+
+  async findUserOrderById(userNumber: string, id: number) {
+    const order = await this.prisma.order.findFirst({
+      where: { id, userNumber },
+    });
+    if (!order) {
+      throw new NotFoundException("Buyurtma topilmadi");
+    }
+    return order;
   }
 
   async update(orderId: string, updateOrderDto: UpdateOrderDto) {
