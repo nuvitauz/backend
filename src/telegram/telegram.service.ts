@@ -32,6 +32,13 @@ export class TelegramService implements OnModuleInit {
   // Link tokens storage - for linking existing web users to Telegram
   private linkTokens = new Map<string, LinkToken>();
 
+  // Pending links keyed by telegramUserId (set after /start link_XXX,
+  // consumed when user shares contact)
+  private pendingLinks = new Map<
+    string,
+    { token: string; phone: string; userId: number; createdAt: number }
+  >();
+
   constructor(private readonly prisma: PrismaService) {
     this.bot = new Telegraf(
       process.env.TELEGRAM_BOT_TOKEN || '8379782597:AAE4jSnqLDn9dVRkn4bUX2uGGtHsxFNJzZc'
@@ -46,6 +53,18 @@ export class TelegramService implements OnModuleInit {
     return crypto.randomBytes(6).toString('hex'); // 12 character token
   }
 
+  private normalizePhone(phone: string): string {
+    return (phone || '').replace(/[^\d]/g, '');
+  }
+
+  private maskPhone(phone: string): string {
+    const digits = this.normalizePhone(phone);
+    if (digits.length < 6) return phone;
+    const last = digits.slice(-2);
+    const first = digits.slice(0, 3);
+    return `+${first}•••••${last}`;
+  }
+
   private cleanupExpiredTokens() {
     const now = Date.now();
     for (const [token, data] of this.registrationTokens.entries()) {
@@ -57,6 +76,12 @@ export class TelegramService implements OnModuleInit {
     for (const [token, data] of this.linkTokens.entries()) {
       if (now - data.createdAt > this.TOKEN_EXPIRY) {
         this.linkTokens.delete(token);
+      }
+    }
+    // Cleanup pending links
+    for (const [tgId, data] of this.pendingLinks.entries()) {
+      if (now - data.createdAt > this.TOKEN_EXPIRY) {
+        this.pendingLinks.delete(tgId);
       }
     }
   }
@@ -121,45 +146,51 @@ export class TelegramService implements OnModuleInit {
       if (startParam.startsWith('link_')) {
         const linkToken = startParam;
         const linkData = this.getLinkToken(linkToken);
-        
+
         if (!linkData) {
           await ctx.reply(
             "❌ Havola yaroqsiz yoki muddati tugagan.\n\nIltimos, profil sahifasidan qaytadan ulash tugmasini bosing.",
-            Markup.removeKeyboard()
+            Markup.removeKeyboard(),
           );
           return;
         }
 
         // Check if this TG account is already linked to another user
         const existingTgUser = await this.prisma.user.findUnique({
-          where: { userId: telegramUserId }
+          where: { userId: telegramUserId },
         });
 
         if (existingTgUser && existingTgUser.id !== linkData.userId) {
           await ctx.reply(
             "⚠️ Bu Telegram hisob boshqa foydalanuvchiga ulangan.\n\nIltimos, boshqa Telegram hisobdan foydalaning.",
-            Markup.removeKeyboard()
+            Markup.removeKeyboard(),
           );
           return;
         }
 
-        // Link the Telegram account to the web user
-        await this.prisma.user.update({
-          where: { id: linkData.userId },
-          data: {
-            userId: telegramUserId,
-            username: telegramUsername,
-            fullName: telegramFullName,
-          },
+        // Kontakt ulashishni talab qilamiz — havola egasining raqamini
+        // tekshirish uchun. Bu xavfsizroq: boshqa kimdir link_XXX ni ko'rib
+        // qolsa ham, raqam mos kelmasa ulay olmaydi.
+        this.pendingLinks.set(telegramUserId, {
+          token: linkToken,
+          phone: linkData.phone,
+          userId: linkData.userId,
+          createdAt: Date.now(),
         });
 
-        this.deleteLinkToken(linkToken);
-
+        const masked = this.maskPhone(linkData.phone);
         await ctx.reply(
-          `✅ Telegram hisobingiz muvaffaqiyatli ulandi!\n\n🎉 Endi siz botdan to'liq foydalanishingiz mumkin.`,
-          Markup.inlineKeyboard([
-            [Markup.button.webApp("🛒 Do'konga kirish", this.MINI_APP_URL)]
-          ])
+          `🔐 Hisobingizni ulash uchun telefon raqamingizni ulashing.\n\n` +
+            `📱 Havolada ko'rsatilgan raqam: *${masked}*\n\n` +
+            `Quyidagi tugma orqali telefon raqamingizni yuboring — u havolada ko'rsatilgan raqam bilan tekshiriladi:`,
+          {
+            parse_mode: 'Markdown',
+            ...Markup.keyboard([
+              [Markup.button.contactRequest('📱 Telefon raqamni ulashish')],
+            ])
+              .resize()
+              .oneTime(),
+          },
         );
         return;
       }
@@ -195,7 +226,87 @@ export class TelegramService implements OnModuleInit {
 
       const telegramUserId = String(ctx.from.id);
       const telegramUsername = ctx.from.username || null;
-      const telegramFullName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null;
+      const telegramFullName =
+        [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') ||
+        null;
+
+      // Security: contact must belong to the user who sent it
+      if (
+        contact.user_id &&
+        String(contact.user_id) !== telegramUserId
+      ) {
+        await ctx.reply(
+          "❌ Iltimos, o'zingizning telefon raqamingizni ulashing (boshqa odamning kontaktini emas).",
+          Markup.keyboard([
+            [Markup.button.contactRequest('📱 Telefon raqamni ulashish')],
+          ])
+            .resize()
+            .oneTime(),
+        );
+        return;
+      }
+
+      // Check if this is a pending link from /start link_XXX
+      const pending = this.pendingLinks.get(telegramUserId);
+      if (pending) {
+        // Token still valid?
+        if (Date.now() - pending.createdAt > this.TOKEN_EXPIRY) {
+          this.pendingLinks.delete(telegramUserId);
+          await ctx.reply(
+            '⌛ Ulash havolasi muddati tugagan. Iltimos, profil sahifasidan qayta urinib ko\'ring.',
+            Markup.removeKeyboard(),
+          );
+          return;
+        }
+
+        // Check phone matches
+        if (this.normalizePhone(pending.phone) !== this.normalizePhone(phoneNumber)) {
+          await ctx.reply(
+            `❌ Ulashilgan raqam havola egasining raqamiga mos emas.\n\n` +
+              `📱 Havola raqami: *${this.maskPhone(pending.phone)}*\n` +
+              `📱 Siz yubordingiz: *${this.maskPhone(phoneNumber)}*\n\n` +
+              `Iltimos, to'g'ri akkauntdan yoki profildan qayta ulash havolasini oling.`,
+            {
+              parse_mode: 'Markdown',
+              ...Markup.removeKeyboard(),
+            },
+          );
+          return;
+        }
+
+        // Ensure TG account is not linked to another user
+        const existingTgUser = await this.prisma.user.findUnique({
+          where: { userId: telegramUserId },
+        });
+        if (existingTgUser && existingTgUser.id !== pending.userId) {
+          this.pendingLinks.delete(telegramUserId);
+          await ctx.reply(
+            '⚠️ Bu Telegram hisob boshqa foydalanuvchiga ulangan.',
+            Markup.removeKeyboard(),
+          );
+          return;
+        }
+
+        // Link!
+        const linkedUser = await this.prisma.user.update({
+          where: { id: pending.userId },
+          data: {
+            userId: telegramUserId,
+            username: telegramUsername,
+            fullName: telegramFullName || undefined,
+          },
+        });
+
+        this.deleteLinkToken(pending.token);
+        this.pendingLinks.delete(telegramUserId);
+
+        await ctx.reply(
+          `✅ Telefon raqam tasdiqlandi va Telegram hisobingiz profilga ulandi!`,
+          Markup.removeKeyboard(),
+        );
+
+        return this.handleRegisteredUser(ctx, linkedUser);
+      }
 
       // Check if user exists with this phone number
       let user = await this.prisma.user.findUnique({
