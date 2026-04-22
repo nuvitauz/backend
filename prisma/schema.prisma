@@ -23,6 +23,8 @@ model User {
   profileComplete Boolean        @default(false) @map("profile_complete")
   lang            Lang           @default(UZ)
   role            Role           @default(USER)
+  status          UserStatus     @default(ACTIVE)
+
   createdAt       DateTime       @default(now()) @map("created_at")
   updatedAt       DateTime       @updatedAt @map("updated_at")
   cart            Cart?
@@ -35,7 +37,6 @@ model User {
 model Category {
   id           Int                   @id @default(autoincrement())
   name         String                @unique // Default UZ
-  description  String?               // Default UZ
   isActive     Boolean               @default(true) @map("is_active")
   createdAt    DateTime              @default(now()) @map("created_at")
   updatedAt    DateTime              @updatedAt @map("updated_at")
@@ -46,12 +47,11 @@ model Category {
 }
 
 model CategoryTranslation {
-  id          Int      @id @default(autoincrement())
-  categoryId  Int      @map("category_id")
-  lang        Lang     // RU yoki EN
-  name        String
-  description String?
-  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  id         Int      @id @default(autoincrement())
+  categoryId Int      @map("category_id")
+  lang       Lang     // RU yoki EN
+  name       String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   @@unique([categoryId, lang])
   @@map("category_translations")
@@ -95,6 +95,7 @@ model ProductTranslation {
   @@unique([productId, lang])
   @@map("product_translations")
 }
+
 
 model ProductScore {
   id        Int      @id @default(autoincrement())
@@ -163,6 +164,12 @@ enum Role {
   COURIER
 }
 
+enum UserStatus {
+  ACTIVE
+  NOCASH
+  BANNED
+}
+
 enum Lang {
   UZ
   RU
@@ -190,9 +197,11 @@ enum OrderStatus {
 }
 
 model Settings {
-  id           Int      @id @default(1)
-  deliverySumm Float    @default(30000) @map("delivery_summ")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id                 Int      @id @default(1)
+  deliverySumm       Float    @default(30000) @map("delivery_summ")
+  maintenanceMode    Boolean  @default(false) @map("maintenance_mode")
+  maintenanceMessage String?  @map("maintenance_message")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("settings")
 }
@@ -230,8 +239,7 @@ enum MessageRole {
 model Banner {
   id        Int      @id @default(autoincrement())
   image     String   // Banner rasm yo'li
-  title     String?  // Ixtiyoriy sarlavha
-  link      String?  // Ixtiyoriy havola
+  link      String   @default("https://nuvita.uz/") // Bosilganda o'tiladigan havola
   order     Int      @default(0) // Ko'rsatish tartibi
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")

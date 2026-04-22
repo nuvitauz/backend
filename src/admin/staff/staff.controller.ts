@@ -1,9 +1,16 @@
-import { Controller, Post, Body, UseGuards, Get } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Patch,
+  Delete,
+  Param,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { StaffService } from './staff.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
-import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
-// TODO: Roles guard to protect these endpoints specifically for admins.
-
+import { Role } from '../../../generated/prisma';
 
 @Controller('admin/staff')
 export class StaffController {
@@ -17,5 +24,18 @@ export class StaffController {
   @Get()
   findAll() {
     return this.staffService.findAll();
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { fullName?: string; role?: Role },
+  ) {
+    return this.staffService.update(id, body);
+  }
+
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.staffService.remove(id);
   }
 }

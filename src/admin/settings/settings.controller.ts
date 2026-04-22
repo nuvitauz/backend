@@ -1,20 +1,30 @@
-
-import { Controller, Get, Post, Body, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post } from "@nestjs/common";
 import { SettingsService } from "./settings.service";
-import { JwtAuthGuard } from "../../auth/jwt-auth.guard";
 
-@Controller("admin/settings")
+@Controller()
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
-  @Get()
+  @Get("admin/settings")
   getSettings() {
     return this.settingsService.getSettings();
   }
 
-  @Post()
-  updateSettings(@Body("deliverySumm") deliverySumm: number) {
-    return this.settingsService.updateSettings(deliverySumm);
+  @Post("admin/settings")
+  updateSettings(
+    @Body()
+    body: {
+      deliverySumm?: number;
+      maintenanceMode?: boolean;
+      maintenanceMessage?: string | null;
+    },
+  ) {
+    return this.settingsService.updateSettings(body);
+  }
+
+  // Public endpoint — barcha foydalanuvchilar tekshirib turishi uchun
+  @Get("public/maintenance")
+  getMaintenance() {
+    return this.settingsService.getPublicStatus();
   }
 }
-

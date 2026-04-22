@@ -41,6 +41,12 @@ export class ScoreController {
     return this.scoreService.getProductRating(productId);
   }
 
+  // Get ratings for ALL products at once (public) — useful for listing pages
+  @Get('ratings')
+  async getAllRatings() {
+    return this.scoreService.getAllRatings();
+  }
+
   // Get product with all info including reviews and rating (public)
   @Get('product-detail/:productId')
   async getProductWithRating(@Param('productId') productId: string) {

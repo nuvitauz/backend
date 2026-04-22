@@ -13,12 +13,10 @@ import { Lang } from '../../../generated/prisma';
 
 interface TranslationInput {
   name: string;
-  description?: string;
 }
 
 interface CreateCategoryDto {
   name: string;
-  description?: string;
   translations?: {
     ru?: TranslationInput;
     en?: TranslationInput;
@@ -27,7 +25,6 @@ interface CreateCategoryDto {
 
 interface UpdateCategoryDto {
   name?: string;
-  description?: string;
   isActive?: boolean;
   translations?: {
     ru?: TranslationInput;

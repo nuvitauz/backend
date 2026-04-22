@@ -83,17 +83,16 @@ export class BannerController {
   )
   async create(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: { title?: string; link?: string },
+    @Body() body: { link?: string },
   ) {
     if (!file) {
       throw new BadRequestException('Banner rasmi majburiy');
     }
 
     const imagePath = `/BannerPhoto/${file.filename}`;
-    
+
     return this.bannerService.create({
       image: imagePath,
-      title: body.title,
       link: body.link,
     });
   }
@@ -102,9 +101,8 @@ export class BannerController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { title?: string; link?: string; isActive?: boolean },
+    @Body() body: { link?: string; isActive?: boolean },
   ) {
-    // isActive string bo'lsa boolean ga o'girish
     if (body.isActive !== undefined) {
       body.isActive = String(body.isActive) === 'true';
     }

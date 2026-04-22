@@ -8,12 +8,10 @@ import { Lang } from '../../../generated/prisma';
 
 interface CategoryTranslationInput {
   name: string;
-  description?: string;
 }
 
 interface CreateCategoryDto {
   name: string;
-  description?: string;
   translations?: {
     ru?: CategoryTranslationInput;
     en?: CategoryTranslationInput;
@@ -22,7 +20,6 @@ interface CreateCategoryDto {
 
 interface UpdateCategoryDto {
   name?: string;
-  description?: string;
   isActive?: boolean;
   translations?: {
     ru?: CategoryTranslationInput;
@@ -42,34 +39,34 @@ export class CategoryService {
       throw new ConflictException('Bu nomdagi kategoriya allaqachon mavjud');
     }
 
-    const translationsData: { lang: Lang; name: string; description?: string }[] = [];
-    
+    const translationsData: { lang: Lang; name: string }[] = [];
+
     if (data.translations?.ru?.name) {
       translationsData.push({
         lang: Lang.RU,
         name: data.translations.ru.name,
-        description: data.translations.ru.description,
       });
     }
-    
+
     if (data.translations?.en?.name) {
       translationsData.push({
         lang: Lang.EN,
         name: data.translations.en.name,
-        description: data.translations.en.description,
       });
     }
 
     return this.prisma.category.create({
       data: {
         name: data.name,
-        description: data.description,
         isActive: true,
-        translations: translationsData.length > 0 ? {
-          createMany: {
-            data: translationsData,
-          },
-        } : undefined,
+        translations:
+          translationsData.length > 0
+            ? {
+                createMany: {
+                  data: translationsData,
+                },
+              }
+            : undefined,
       },
       include: {
         translations: true,
@@ -85,14 +82,12 @@ export class CategoryService {
       },
     });
 
-    // Agar til berilgan bo'lsa va UZ emas bo'lsa, tarjimani qaytarish
     if (lang && lang !== Lang.UZ) {
-      return categories.map(cat => {
-        const translation = cat.translations.find(t => t.lang === lang);
+      return categories.map((cat) => {
+        const translation = cat.translations.find((t) => t.lang === lang);
         return {
           ...cat,
           name: translation?.name || cat.name,
-          description: translation?.description || cat.description,
         };
       });
     }
@@ -113,7 +108,7 @@ export class CategoryService {
 
   async update(id: number, data: UpdateCategoryDto) {
     await this.findOne(id);
-    
+
     if (data.name) {
       const existing = await this.prisma.category.findFirst({
         where: { name: data.name, id: { not: id } },
@@ -123,12 +118,11 @@ export class CategoryService {
       }
     }
 
-    // Tarjimalarni yangilash
     if (data.translations) {
       for (const lang of [Lang.RU, Lang.EN] as const) {
         const langKey = lang.toLowerCase() as 'ru' | 'en';
         const translationData = data.translations[langKey];
-        
+
         if (translationData?.name) {
           await this.prisma.categoryTranslation.upsert({
             where: {
@@ -138,11 +132,9 @@ export class CategoryService {
               categoryId: id,
               lang,
               name: translationData.name,
-              description: translationData.description,
             },
             update: {
               name: translationData.name,
-              description: translationData.description,
             },
           });
         }
@@ -153,7 +145,6 @@ export class CategoryService {
       where: { id },
       data: {
         name: data.name,
-        description: data.description,
         isActive: data.isActive,
       },
       include: {
