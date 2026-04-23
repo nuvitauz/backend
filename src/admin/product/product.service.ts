@@ -7,6 +7,31 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { randomUUID } from 'crypto';
 import { Lang } from '../../../generated/prisma';
 
+// Tarjimani mahsulot ustiga qo'shadi. DB kalitlarini (name, category) o'zgartirmaydi —
+// faqat `displayName`, `displayDescription`, va h.k. qo'shib qo'yadi.
+function applyProductTranslation(product: any, lang?: Lang) {
+  if (!product) return product;
+  const t =
+    lang && lang !== Lang.UZ
+      ? product.translations?.find((x: any) => x.lang === lang)
+      : null;
+
+  let displayCategory = product.category;
+  if (lang && lang !== Lang.UZ && product.categoryRel?.translations) {
+    const ct = product.categoryRel.translations.find((x: any) => x.lang === lang);
+    if (ct?.name) displayCategory = ct.name;
+  }
+
+  return {
+    ...product,
+    displayName: t?.name || product.name,
+    displayIngredients: t?.ingredients ?? product.ingredients,
+    displayUses: t?.uses ?? product.uses,
+    displayDescription: t?.description ?? product.description,
+    displayCategory,
+  };
+}
+
 interface TranslationData {
   name: string;
   ingredients?: string;
@@ -76,23 +101,27 @@ export class ProductService {
     });
   }
 
-  async findAll() {
-    return this.prisma.product.findMany({
+  async findAll(lang?: Lang) {
+    const products = await this.prisma.product.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
-        categoryRel: true,
+        categoryRel: { include: { translations: true } },
         translations: true,
       },
     });
+    return products.map((p) => applyProductTranslation(p, lang));
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, lang?: Lang) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: { translations: true },
+      include: {
+        categoryRel: { include: { translations: true } },
+        translations: true,
+      },
     });
     if (!product) throw new NotFoundException('Mahsulot topilmadi');
-    return product;
+    return applyProductTranslation(product, lang);
   }
 
   async update(id: number, data: any) {

@@ -3,75 +3,35 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 
-const BASE_SYSTEM_PROMPT = `Sen — Nuvita AI, Nuvita.uz platformasining professional tibbiyot maslahatchisan.
-Sen tajribali farmatsevt, nutritsiolog va umumiy amaliyot shifokor sifatida ishlaysan.
+const BASE_SYSTEM_PROMPT = `Sen — Nuvita AI, Nuvita.uz ning professional sog'liq maslahatchisi (farmatsevt + nutritsiolog).
 
-═══════════════════════════════════════════
-SENING ROLING VA MUTAXASSISLIGING
-═══════════════════════════════════════════
-• Dori-darmonlar, vitaminlar, minerallar va BAA'lar bo'yicha ekspert
-• Sog'lom ovqatlanish va nutritsionistika bo'yicha maslahatchi
-• Umumiy kasalliklarning alomatlari va profilaktikasi bo'yicha tajribali
-• Nuvita.uz mahsulotlari va ularning qo'llanilishi bo'yicha mutaxassis
-• Sport bilan shug'ullanuvchilar uchun qo'shimchalar bo'yicha konsultant
+MUHIM — JAVOB USLUBI (qat'iy!):
+• O'zbek tilida, jonli va sodda gapir
+• JUDA QISQA VA ANIQ javob ber — havola izlab yurma
+• Oddiy savolga: 1-2 qisqa gap
+• Murakkab savolga: 3-5 gap, kerak bo'lsa 2-3 bullet (•)
+• HECH QACHON uzun paragraf, ortiqcha kirishsoz, takror yozma
+• Emoji — faqat kerak bo'lsa 1 tadan (ortiqchasi — yo'q)
+• Muhim fakt/mahsulot nomini **qalin** qilib ber (markdown **...**)
+• Tibbiy atamalarni sodda so'zlab yoz
 
-═══════════════════════════════════════════
-JAVOB BERISH USLUBI
-═══════════════════════════════════════════
-1. O'zbek tilida, aniq va sodda til bilan javob ber
-2. Javoblar strukturali bo'lsin: muhim joylarni alohida ajratib ko'rsat
-3. Kerak bo'lsa, ro'yxatlar (•) va qadamlar (1., 2., 3.) ishlat
-4. Javob uzunligi savolga mos: oddiy savolga 2-4 gap, murakkab savolga 5-10 gap
-5. Do'stona, hurmat bilan va empatiya bilan gapir
-6. Tibbiy terminlarni sodda tilda tushuntir
-7. Foydalanuvchi ismi bilan murojaat qilsa, uni ishlat
+SENING VAZIFANG:
+• Vitaminlar, BAA, dori-darmon, ovqatlanish bo'yicha maslahat
+• Oddiy alomatlarga ishora — lekin TASHXIS QO'YMA
+• Nuvita mahsuloti mos bo'lsa — uni qisqa tavsiya qil (nomi + nima uchun)
 
-═══════════════════════════════════════════
-XAVFSIZLIK VA CHEGARALAR
-═══════════════════════════════════════════
-⚠ Quyidagilarda ALBATTA shifokorga murojaat qilishni maslahat ber:
-  - Jiddiy alomatlar (yurak og'rig'i, qattiq og'riq, uzoq davom etuvchi kasallik)
-  - Homilador va emizikli ayollarning har qanday davolanishi
-  - Bolalar uchun dorilar va qo'shimchalar
-  - Surunkali kasalliklar (diabet, gipertoniya, astma va h.k.)
-  - Bir nechta dorilar birgalikda qo'llanilishi
+XAVFSIZLIK (muhim!):
+• Jiddiy alomat, homilador/emizikli, bola, surunkali kasallik — "shifokorga murojaat qiling" deb qisqa ogohlantir
+• Retseptli dori tavsiya qilma, doza o'zgartirma
 
-⚠ ASLO QILMA:
-  - Aniq tashxis qo'yma ("Sizda X kasallik bor" dema)
-  - Retseptli dorilarni tavsiya qilma
-  - Dozani o'zgartirishni taklif qilma (shifokorning qarorisiz)
-  - Tibbiy yordamni kechiktirishga undama
+MAVZUDAN TASHQARI SAVOL:
+"Men sog'liq va Nuvita mahsulotlari bo'yicha yordam beraman 😊" — shu kabi qisqa yo'naltir.
 
-═══════════════════════════════════════════
-NUVITA MAHSULOTLARI
-═══════════════════════════════════════════
-• Agar foydalanuvchining muammosiga mos Nuvita mahsuloti bo'lsa — uni tavsiya qil
-• Mahsulotni nomi, tarkibi va foydasi bilan tavsiflab ber
-• Narx va sotib olish uchun saytda mavjudligini aytib o'tishing mumkin
-• Lekin faqat sotishga urg'u berma — avval muammoni hal qilishga yordam ber
+Esda tut: foydalanuvchi tez javob kutadi. Uzun yozsang — u o'qimay yopib ketadi.`;
 
-═══════════════════════════════════════════
-MAVZUDAN TASHQARI SAVOLLAR
-═══════════════════════════════════════════
-Agar savol sog'liq, ovqatlanish, dori-darmon yoki Nuvita mahsulotlariga aloqasi bo'lmasa,
-samimiy tarzda mavzuga qaytar:
-"Men sog'liq va Nuvita mahsulotlari bo'yicha yordam bera olaman. Sizga qanday yordam kerak? 😊"
+const GREETING_MESSAGE = `Assalomu alaykum! 👋 Men — **Nuvita AI**, sog'liq maslahatchingiz.
 
-Har doim professional, ishonchli va g'amxo'r bo'l. Sen — foydalanuvchining sog'lig'iga yordamchisan.`;
-
-const GREETING_MESSAGE = `Assalomu alaykum! 👋
-
-Men — Nuvita AI, sizning shaxsiy sog'liq maslahatchingizman.
-
-Men sizga quyidagilarda yordam bera olaman:
-
-🌿 Vitaminlar va qo'shimchalarni to'g'ri tanlashda
-🥗 Sog'lom ovqatlanish bo'yicha maslahat
-💊 Dori-darmonlar haqida umumiy ma'lumot
-🏃 Sportchilar uchun qo'shimchalar
-🛒 Nuvita mahsulotlari bo'yicha tavsiyalar
-
-Sog'lig'ingiz bilan bog'liq savolingizni yozing — sizga yordam berishdan xursand bo'laman! 😊`;
+Vitamin, BAA, ovqatlanish yoki Nuvita mahsulotlari bo'yicha savolingizni qisqa yozing — tez va aniq javob beraman.`;
 
 type ChatRole = 'system' | 'user' | 'assistant';
 interface GPTMessage {
@@ -111,8 +71,21 @@ export class ChatService {
   }
 
   async createSession(userId?: number, number?: string) {
+    // If we know the userId, pull their phone too so the session is fully linked.
+    let finalNumber: string | null = number ?? null;
+    if (userId && !finalNumber) {
+      const u = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { number: true },
+      });
+      finalNumber = u?.number ?? null;
+    }
+
     const session = await this.prisma.chatSession.create({
-      data: { userId, number },
+      data: {
+        userId: userId ?? null,
+        number: finalNumber,
+      },
     });
 
     await this.prisma.chatMessage.create({
@@ -151,7 +124,12 @@ export class ChatService {
     };
   }
 
-  async sendMessage(sessionId: string, userMessage: string) {
+  async sendMessage(
+    sessionId: string,
+    userMessage: string,
+    authUserId?: number,
+    lang?: 'UZ' | 'RU' | 'EN',
+  ) {
     const trimmed = (userMessage || '').trim();
     if (!trimmed) {
       throw new Error("Xabar bo'sh bo'lishi mumkin emas");
@@ -171,6 +149,24 @@ export class ChatService {
       throw new Error('Session topilmadi');
     }
 
+    // Backfill linkage if the session was created as a guest and the user has
+    // since logged in. This recovers chats started before authentication.
+    if (authUserId && !session.userId) {
+      const u = await this.prisma.user.findUnique({
+        where: { id: authUserId },
+        select: { number: true },
+      });
+      await this.prisma.chatSession.update({
+        where: { id: session.id },
+        data: {
+          userId: authUserId,
+          number: session.number ?? u?.number ?? null,
+        },
+      });
+      session.userId = authUserId;
+      if (!session.number && u?.number) session.number = u.number;
+    }
+
     await this.prisma.chatMessage.create({
       data: {
         sessionId: session.id,
@@ -188,7 +184,7 @@ export class ChatService {
       });
     }
 
-    const systemPrompt = await this.buildSystemPrompt(sessionUser);
+    const systemPrompt = await this.buildSystemPrompt(sessionUser, lang);
 
     const messages: GPTMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -226,11 +222,19 @@ export class ChatService {
 
   private async buildSystemPrompt(
     user?: { fullName: string | null; number: string | null } | null,
+    lang?: 'UZ' | 'RU' | 'EN',
   ): Promise<string> {
     let prompt = BASE_SYSTEM_PROMPT;
 
+    // Til ko'rsatmasi — RU yoki EN bo'lsa AI javobni shu tilda beradi.
+    if (lang === 'RU') {
+      prompt += `\n\nЯЗЫК ОТВЕТА: ОБЯЗАТЕЛЬНО отвечай на русском языке. Используй "**жирный**" для названий продуктов.`;
+    } else if (lang === 'EN') {
+      prompt += `\n\nRESPONSE LANGUAGE: ALWAYS reply in English. Use "**bold**" for product names.`;
+    }
+
     if (user?.fullName) {
-      prompt += `\n\n═══════════════════════════════════════════\nFOYDALANUVCHI HAQIDA\n═══════════════════════════════════════════\nFoydalanuvchining ismi: ${user.fullName}\nUnga ismini ishlatib, hurmat bilan murojaat qil.`;
+      prompt += `\n\nFOYDALANUVCHI ISMI: ${user.fullName} — tabiiy tarzda ismini ishlat (har gapda emas).`;
     }
 
     try {
@@ -241,23 +245,31 @@ export class ChatService {
           description: true,
           price: true,
           category: true,
+          translations: {
+            select: { lang: true, name: true, description: true },
+          },
         },
-        take: 25,
+        take: 20,
         orderBy: { createdAt: 'desc' },
       });
 
       if (products.length > 0) {
         const catalog = products
-          .map((p, i) => {
+          .map((p) => {
+            let name = p.name;
+            let desc = p.description ? p.description.slice(0, 70) : '';
+            if (lang && lang !== 'UZ') {
+              const tr = p.translations.find((tt) => tt.lang === lang);
+              if (tr?.name) name = tr.name;
+              if (tr?.description) desc = tr.description.slice(0, 70);
+            }
             const cat = p.category ? ` [${p.category}]` : '';
-            const desc = p.description
-              ? ` — ${p.description.slice(0, 120)}`
-              : '';
-            return `${i + 1}. ${p.name}${cat} — ${p.price.toLocaleString('uz-UZ')} so'm${desc}`;
+            const descPart = desc ? ` — ${desc}` : '';
+            return `• ${name}${cat} — ${p.price.toLocaleString('uz-UZ')} so'm${descPart}`;
           })
           .join('\n');
 
-        prompt += `\n\n═══════════════════════════════════════════\nHOZIRDA SOTUVDA MAVJUD NUVITA MAHSULOTLARI\n═══════════════════════════════════════════\n${catalog}\n\nAgar foydalanuvchining muammosiga mos mahsulot yuqoridagi ro'yxatda bo'lsa, uni nomi bilan tavsiya qil. Agar mos mahsulot yo'q bo'lsa, umumiy maslahat ber.`;
+        prompt += `\n\nNUVITA MAHSULOTLARI (mavjud):\n${catalog}\n\nMos mahsulot bo'lsa — qisqa tavsiya qil (nomi + foydasi). Yo'q bo'lsa — umumiy maslahat ber.`;
       }
     } catch (e) {
       this.logger.warn(
@@ -280,10 +292,10 @@ export class ChatService {
       const completion = await this.openai.chat.completions.create({
         model: this.model,
         messages,
-        max_tokens: 600,
-        temperature: 0.7,
-        presence_penalty: 0.3,
-        frequency_penalty: 0.2,
+        max_tokens: 220,
+        temperature: 0.6,
+        presence_penalty: 0.2,
+        frequency_penalty: 0.3,
       });
 
       const content = completion.choices?.[0]?.message?.content?.trim();

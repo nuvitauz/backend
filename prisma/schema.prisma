@@ -10,7 +10,7 @@ datasource db {
 
 model User {
   id              Int            @id @default(autoincrement())
-  number          String         @unique
+  number          String?        @unique
   password        String?
   userId          String?        @unique @map("user_id")
   username        String?

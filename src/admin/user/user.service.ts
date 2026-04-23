@@ -143,6 +143,7 @@ export class AdminUserService {
       select: { number: true },
     });
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
+    if (!user.number) return { id: null, count: 0, summ: 0, items: [] };
 
     const cart = await this.prisma.cart.findUnique({
       where: { number: user.number },
@@ -178,6 +179,7 @@ export class AdminUserService {
       select: { number: true },
     });
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
+    if (!user.number) return [];
 
     return this.prisma.savedProduct.findMany({
       where: { number: user.number },
@@ -205,10 +207,13 @@ export class AdminUserService {
     });
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
 
+    // Build an exact-match OR list. IMPORTANT: never include a `{ number: null }`
+    // clause — that would match every orphan/guest session in the DB.
+    const or: { userId?: number; number?: string }[] = [{ userId: id }];
+    if (user.number) or.push({ number: user.number });
+
     const sessions = await this.prisma.chatSession.findMany({
-      where: {
-        OR: [{ userId: id }, { number: user.number }],
-      },
+      where: { OR: or },
       orderBy: { createdAt: 'desc' },
       include: {
         _count: { select: { messages: true } },

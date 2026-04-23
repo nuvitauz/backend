@@ -82,17 +82,17 @@ export class CategoryService {
       },
     });
 
-    if (lang && lang !== Lang.UZ) {
-      return categories.map((cat) => {
-        const translation = cat.translations.find((t) => t.lang === lang);
-        return {
-          ...cat,
-          name: translation?.name || cat.name,
-        };
-      });
-    }
-
-    return categories;
+    // DB kaliti (name) o'zgarmaydi, faqat UI uchun displayName qo'shiladi.
+    return categories.map((cat) => {
+      const translation =
+        lang && lang !== Lang.UZ
+          ? cat.translations.find((t) => t.lang === lang)
+          : null;
+      return {
+        ...cat,
+        displayName: translation?.name || cat.name,
+      };
+    });
   }
 
   async findOne(id: number) {

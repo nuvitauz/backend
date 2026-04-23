@@ -8,8 +8,10 @@ import {
   Delete,
   UseInterceptors,
   UploadedFiles,
+  Query,
 } from '@nestjs/common';
 import { ProductService } from './product.service';
+import { Lang } from '../../../generated/prisma';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
@@ -87,13 +89,13 @@ export class ProductController {
   }
 
   @Get()
-  findAll() {
-    return this.productService.findAll();
+  findAll(@Query('lang') lang?: Lang) {
+    return this.productService.findAll(lang);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.productService.findOne(+id);
+  findOne(@Param('id') id: string, @Query('lang') lang?: Lang) {
+    return this.productService.findOne(+id, lang);
   }
 
   @Patch(':id')

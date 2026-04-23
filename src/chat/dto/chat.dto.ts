@@ -16,6 +16,10 @@ export class SendMessageDto {
 
   @IsString()
   content!: string;
+
+  @IsOptional()
+  @IsString()
+  lang?: 'UZ' | 'RU' | 'EN';
 }
 
 export class ChatMessageResponse {

@@ -19,21 +19,42 @@ export class UserService {
         dateOfBirth: true,
         gender: true,
         lang: true,
+        role: true,
+        password: true,
         profileComplete: true,
+        createdAt: true,
       },
     });
 
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
-    return user;
+
+    const { password, ...safe } = user;
+    return { ...safe, hasPassword: !!password };
   }
 
   async updateProfile(userId: number, data: any) {
-    if (data.dateOfBirth) {
-      data.dateOfBirth = new Date(data.dateOfBirth);
+    // Do not allow client to change sensitive fields via profile patch.
+    const allowed: Record<string, any> = {};
+    const allowKeys = [
+      'fullName',
+      'email',
+      'address',
+      'dateOfBirth',
+      'gender',
+      'lang',
+      'profileComplete',
+    ];
+    for (const key of allowKeys) {
+      if (data[key] !== undefined) allowed[key] = data[key];
     }
+
+    if (allowed.dateOfBirth) {
+      allowed.dateOfBirth = new Date(allowed.dateOfBirth);
+    }
+
     const updatedUser = await this.prisma.user.update({
       where: { id: userId },
-      data,
+      data: allowed,
       select: {
         id: true,
         number: true,
@@ -45,9 +66,14 @@ export class UserService {
         dateOfBirth: true,
         gender: true,
         lang: true,
+        role: true,
+        password: true,
         profileComplete: true,
+        createdAt: true,
       },
     });
-    return updatedUser;
+
+    const { password, ...safe } = updatedUser;
+    return { ...safe, hasPassword: !!password };
   }
 }

@@ -7,9 +7,12 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { ChatService } from './chat.service';
 import { CreateSessionDto, SendMessageDto } from './dto/chat.dto';
+import { OptionalJwtAuthGuard } from './optional-auth.guard';
 
 @Controller('chat')
 export class ChatController {
@@ -17,10 +20,15 @@ export class ChatController {
 
   constructor(private readonly chatService: ChatService) {}
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Post('session')
-  async createSession(@Body() dto: CreateSessionDto) {
+  async createSession(@Body() dto: CreateSessionDto, @Req() req: any) {
     try {
-      return await this.chatService.createSession(dto.userId, dto.number);
+      // Prefer the authenticated user (from JWT) over client-supplied fields —
+      // this guarantees every logged-in user's chat is correctly linked.
+      const authUserId: number | undefined = req?.user?.sub;
+      const finalUserId = authUserId ?? dto.userId;
+      return await this.chatService.createSession(finalUserId, dto.number);
     } catch (error: any) {
       this.logger.error(
         `createSession xatosi: ${error?.message}`,
@@ -42,8 +50,9 @@ export class ChatController {
     return session;
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Post('message')
-  async sendMessage(@Body() dto: SendMessageDto) {
+  async sendMessage(@Body() dto: SendMessageDto, @Req() req: any) {
     if (!dto?.sessionId || !dto?.content?.trim()) {
       throw new HttpException(
         'sessionId va content majburiy',
@@ -51,7 +60,13 @@ export class ChatController {
       );
     }
     try {
-      return await this.chatService.sendMessage(dto.sessionId, dto.content);
+      const authUserId: number | undefined = req?.user?.sub;
+      return await this.chatService.sendMessage(
+        dto.sessionId,
+        dto.content,
+        authUserId,
+        dto.lang,
+      );
     } catch (error: any) {
       this.logger.error(`sendMessage xatosi: ${error?.message}`, error?.stack);
       throw new HttpException(

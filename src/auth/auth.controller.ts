@@ -1,6 +1,17 @@
-import { Controller, Post, Body, Get, Param, NotFoundException } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  NotFoundException,
+  UseGuards,
+  Req,
+  BadRequestException,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { TelegramService } from '../telegram/telegram.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -72,9 +83,67 @@ export class AuthController {
       }
     );
 
-    // Delete token after successful registration
     this.telegramService.deleteRegistrationToken(body.token);
 
     return result;
+  }
+
+  /**
+   * Request a password-setup link via Telegram bot for a phone number
+   * that exists in DB but has no password yet. Bot will DM a one-time link.
+   */
+  @Post('request-password-link')
+  async requestPasswordLink(@Body('number') number: string) {
+    if (!number) throw new BadRequestException('number is required');
+    const sent = await this.telegramService.sendPasswordSetupLinkByPhone(number);
+    return sent;
+  }
+
+  /**
+   * Set password for the authenticated user (e.g. TG-onboarded user
+   * enabling website login from the profile page).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('set-password')
+  setPassword(@Req() req, @Body('password') password: string) {
+    return this.authService.setPassword(req.user.sub, password);
+  }
+
+  /**
+   * Validate a password-setup token (pw_XXX) issued by the bot
+   * and return minimal user context for the Mini App page.
+   */
+  @Get('password-token/:token')
+  getPasswordToken(@Param('token') token: string) {
+    const data = this.telegramService.getPasswordSetupToken(token);
+    if (!data) {
+      throw new NotFoundException('Token topilmadi yoki muddati tugagan');
+    }
+    return {
+      phone: data.phone,
+      telegramId: data.telegramId,
+    };
+  }
+
+  /**
+   * Consume a one-time password-setup token (pw_XXX) and set the user's
+   * password. Returns fresh JWTs so the Mini App can transition to the
+   * logged-in state without a second call.
+   */
+  @Post('set-password-with-token')
+  async setPasswordWithToken(
+    @Body() body: { token: string; password: string },
+  ) {
+    const data = this.telegramService.getPasswordSetupToken(body.token);
+    if (!data) {
+      throw new NotFoundException('Token topilmadi yoki muddati tugagan');
+    }
+
+    await this.authService.setPassword(data.userId, body.password);
+    this.telegramService.deletePasswordSetupToken(body.token);
+
+    // Also issue fresh tokens so the Mini App can auto-login after setup.
+    const tokens = await this.authService.issueTokensForUser(data.userId);
+    return { ...tokens, success: true };
   }
 }
