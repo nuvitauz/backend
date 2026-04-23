@@ -5,6 +5,7 @@ import { ChatService } from './chat.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ConfigModule } from '@nestjs/config';
 import { OptionalJwtAuthGuard } from './optional-auth.guard';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { OptionalJwtAuthGuard } from './optional-auth.guard';
     }),
   ],
   controllers: [ChatController],
-  providers: [ChatService, OptionalJwtAuthGuard],
+  providers: [ChatService, OptionalJwtAuthGuard, JwtAuthGuard],
   exports: [ChatService],
 })
 export class ChatModule {}

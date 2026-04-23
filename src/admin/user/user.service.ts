@@ -223,15 +223,28 @@ export class AdminUserService {
     return sessions;
   }
 
-  // Bitta sessiya ichidagi xabarlar
-  async getChatSessionMessages(sessionId: number) {
-    const session = await this.prisma.chatSession.findUnique({
-      where: { id: sessionId },
+  // Bitta sessiya ichidagi xabarlar (faqat shu foydalanuvchining raqam/sessiya ID si)
+  async getChatSessionMessages(userId: number, sessionDbId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { number: true },
+    });
+    if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
+    const or: { userId?: number; number?: string }[] = [{ userId }];
+    if (user.number) or.push({ number: user.number });
+
+    const session = await this.prisma.chatSession.findFirst({
+      where: {
+        id: sessionDbId,
+        OR: or,
+      },
       include: {
         messages: { orderBy: { createdAt: 'asc' } },
       },
     });
-    if (!session) throw new NotFoundException('Sessiya topilmadi');
+    if (!session) {
+      throw new NotFoundException('Sessiya topilmadi yoki bu mijozga tegishli emas');
+    }
     return session;
   }
 

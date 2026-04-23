@@ -55,7 +55,10 @@ export class UserController {
     }
 
     // Generate link token
-    const token = this.telegramService.generateLinkToken(user.number, user.id);
+    const token = await this.telegramService.generateLinkToken(
+      user.number,
+      user.id,
+    );
     const botLink = `https://t.me/nuvitauzbot?start=${token}`;
     
     return { 

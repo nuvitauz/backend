@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { Telegraf, Markup } from 'telegraf';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthTokenType } from '../../generated/prisma';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 
@@ -33,23 +34,13 @@ export class TelegramService implements OnModuleInit {
   private readonly MINI_APP_URL: string;
   private readonly WEBSITE_URL = 'https://nuvita.uz';
   
-  // Registration tokens storage (expires after 1 hour)
-  private registrationTokens = new Map<string, RegistrationToken>();
   private readonly TOKEN_EXPIRY = 60 * 60 * 1000; // 1 hour
 
-  // Link tokens storage - for linking existing web users to Telegram
-  private linkTokens = new Map<string, LinkToken>();
-
-  // Pending links keyed by telegramUserId (set after /start link_XXX,
-  // consumed when user shares contact)
-  private pendingLinks = new Map<
+  /** /start link_… dan keyin — kontakt yuborilguncha saqlanadi; token DB da tekshiriladi */
+  private pendingWebLink = new Map<
     string,
-    { token: string; phone: string; userId: number; createdAt: number }
+    { token: string; createdAt: number }
   >();
-
-  // Password-setup tokens (for users who finished TG onboarding but want to
-  // also enable phone+password login on the website).
-  private passwordSetupTokens = new Map<string, PasswordSetupToken>();
 
   constructor(private readonly prisma: PrismaService) {
     this.bot = new Telegraf(
@@ -79,108 +70,144 @@ export class TelegramService implements OnModuleInit {
 
   private cleanupExpiredTokens() {
     const now = Date.now();
-    for (const [token, data] of this.registrationTokens.entries()) {
+    for (const [tgId, data] of this.pendingWebLink.entries()) {
       if (now - data.createdAt > this.TOKEN_EXPIRY) {
-        this.registrationTokens.delete(token);
+        this.pendingWebLink.delete(tgId);
       }
     }
-    // Also cleanup link tokens
-    for (const [token, data] of this.linkTokens.entries()) {
-      if (now - data.createdAt > this.TOKEN_EXPIRY) {
-        this.linkTokens.delete(token);
-      }
-    }
-    // Cleanup pending links
-    for (const [tgId, data] of this.pendingLinks.entries()) {
-      if (now - data.createdAt > this.TOKEN_EXPIRY) {
-        this.pendingLinks.delete(tgId);
-      }
-    }
-    // Cleanup password-setup tokens
-    for (const [token, data] of this.passwordSetupTokens.entries()) {
-      if (now - data.createdAt > this.TOKEN_EXPIRY) {
-        this.passwordSetupTokens.delete(token);
-      }
-    }
+    void this.prisma.authFlowToken
+      .deleteMany({
+        where: {
+          expiresAt: { lt: new Date(Date.now() - 48 * 60 * 60 * 1000) },
+        },
+      })
+      .catch(() => {});
   }
 
-  // Public method to validate and get token data
-  public getRegistrationToken(token: string): RegistrationToken | null {
-    const data = this.registrationTokens.get(token);
-    if (!data) return null;
-    
-    // Check if expired
-    if (Date.now() - data.createdAt > this.TOKEN_EXPIRY) {
-      this.registrationTokens.delete(token);
+  private linkRowToData(row: {
+    phone: string | null;
+    userId: number | null;
+    createdAt: Date;
+  }): LinkToken | null {
+    if (!row.phone || row.userId == null) return null;
+    return {
+      phone: row.phone,
+      userId: row.userId,
+      createdAt: row.createdAt.getTime(),
+    };
+  }
+
+  /** Ro'yxatdan o'tish tokeni (kam ishlatiladi) — DB */
+  public async getRegistrationToken(
+    token: string,
+  ): Promise<RegistrationToken | null> {
+    const row = await this.prisma.authFlowToken.findFirst({
+      where: {
+        token,
+        type: AuthTokenType.REGISTER,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!row || !row.phone || !row.telegramId) {
       return null;
     }
-    
-    return data;
+    return {
+      phone: row.phone,
+      telegramId: row.telegramId,
+      username: row.username ?? '',
+      fullName: row.fullName ?? '',
+      createdAt: row.createdAt.getTime(),
+    };
   }
 
-  // Delete token after successful registration
-  public deleteRegistrationToken(token: string) {
-    this.registrationTokens.delete(token);
+  public async deleteRegistrationToken(token: string): Promise<void> {
+    await this.prisma.authFlowToken.updateMany({
+      where: { token, type: AuthTokenType.REGISTER },
+      data: { consumedAt: new Date() },
+    });
   }
 
-  // Generate link token for existing web user to connect Telegram
-  public generateLinkToken(phone: string, userId: number): string {
+  public async generateLinkToken(phone: string, userId: number): Promise<string> {
     const token = 'link_' + this.generateToken();
-    this.linkTokens.set(token, {
-      phone,
-      userId,
-      createdAt: Date.now(),
+    await this.prisma.authFlowToken.create({
+      data: {
+        token,
+        type: AuthTokenType.LINK,
+        userId,
+        phone,
+        expiresAt: new Date(Date.now() + this.TOKEN_EXPIRY),
+      },
     });
     return token;
   }
 
-  // Get link token data
-  public getLinkToken(token: string): LinkToken | null {
-    const data = this.linkTokens.get(token);
-    if (!data) return null;
-    
-    if (Date.now() - data.createdAt > this.TOKEN_EXPIRY) {
-      this.linkTokens.delete(token);
-      return null;
-    }
-    
-    return data;
+  public async getLinkToken(token: string): Promise<LinkToken | null> {
+    const row = await this.prisma.authFlowToken.findFirst({
+      where: {
+        token,
+        type: AuthTokenType.LINK,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!row) return null;
+    return this.linkRowToData(row);
   }
 
-  // Delete link token after successful linking
-  public deleteLinkToken(token: string) {
-    this.linkTokens.delete(token);
+  public async deleteLinkToken(token: string): Promise<void> {
+    await this.prisma.authFlowToken.updateMany({
+      where: { token, type: AuthTokenType.LINK },
+      data: { consumedAt: new Date() },
+    });
   }
 
-  // ---------- Password setup tokens (for TG-registered users) ----------
-
-  public generatePasswordSetupToken(
+  public async generatePasswordSetupToken(
     userId: number,
     phone: string,
     telegramId: string,
-  ): string {
+  ): Promise<string> {
     const token = 'pw_' + this.generateToken();
-    this.passwordSetupTokens.set(token, {
-      userId,
-      phone,
-      telegramId,
-      createdAt: Date.now(),
+    await this.prisma.authFlowToken.create({
+      data: {
+        token,
+        type: AuthTokenType.PASSWORD_SETUP,
+        userId,
+        phone,
+        telegramId,
+        expiresAt: new Date(Date.now() + this.TOKEN_EXPIRY),
+      },
     });
     return token;
   }
 
-  public getPasswordSetupToken(token: string): PasswordSetupToken | null {
-    const data = this.passwordSetupTokens.get(token);
-    if (!data) return null;
-    if (Date.now() - data.createdAt > this.TOKEN_EXPIRY) {
-      this.passwordSetupTokens.delete(token);
+  public async getPasswordSetupToken(
+    token: string,
+  ): Promise<PasswordSetupToken | null> {
+    const row = await this.prisma.authFlowToken.findFirst({
+      where: {
+        token,
+        type: AuthTokenType.PASSWORD_SETUP,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (!row || !row.phone || !row.telegramId || row.userId == null) {
       return null;
     }
-    return data;
+    return {
+      userId: row.userId,
+      phone: row.phone,
+      telegramId: row.telegramId,
+      createdAt: row.createdAt.getTime(),
+    };
   }
 
-  public deletePasswordSetupToken(token: string) {
-    this.passwordSetupTokens.delete(token);
+  public async deletePasswordSetupToken(token: string): Promise<void> {
+    await this.prisma.authFlowToken.updateMany({
+      where: { token, type: AuthTokenType.PASSWORD_SETUP },
+      data: { consumedAt: new Date() },
+    });
   }
 
   /**
@@ -195,7 +222,11 @@ export class TelegramService implements OnModuleInit {
     if (user.password) return { sent: false, reason: 'ALREADY_HAS_PASSWORD' };
     if (!user.userId) return { sent: false, reason: 'NO_TELEGRAM_LINKED' };
 
-    const token = this.generatePasswordSetupToken(user.id, user.number || phone, user.userId);
+    const token = await this.generatePasswordSetupToken(
+      user.id,
+      user.number || phone,
+      user.userId,
+    );
     const miniAppLink = `https://t.me/nuvitauzbot/nuvitauz?startapp=${token}`;
     try {
       await this.bot.telegram.sendMessage(
@@ -221,48 +252,22 @@ export class TelegramService implements OnModuleInit {
       const telegramUsername = ctx.from.username || null;
       const telegramFullName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || null;
       
-      // Check if this is a link request from web profile
+      // Web profil → Telegram ulash: token DB da; xato faqat kontakt yuborilgach
       const startParam = (ctx as any).startPayload || '';
       if (startParam.startsWith('link_')) {
         const linkToken = startParam;
-        const linkData = this.getLinkToken(linkToken);
-
-        if (!linkData) {
-          await ctx.reply(
-            "❌ Havola yaroqsiz yoki muddati tugagan.\n\nIltimos, profil sahifasidan qaytadan ulash tugmasini bosing.",
-            Markup.removeKeyboard(),
-          );
-          return;
-        }
-
-        // Check if this TG account is already linked to another user
-        const existingTgUser = await this.prisma.user.findUnique({
-          where: { userId: telegramUserId },
-        });
-
-        if (existingTgUser && existingTgUser.id !== linkData.userId) {
-          await ctx.reply(
-            "⚠️ Bu Telegram hisob boshqa foydalanuvchiga ulangan.\n\nIltimos, boshqa Telegram hisobdan foydalaning.",
-            Markup.removeKeyboard(),
-          );
-          return;
-        }
-
-        // Kontakt ulashishni talab qilamiz — havola egasining raqamini
-        // tekshirish uchun. Bu xavfsizroq: boshqa kimdir link_XXX ni ko'rib
-        // qolsa ham, raqam mos kelmasa ulay olmaydi.
-        this.pendingLinks.set(telegramUserId, {
+        this.pendingWebLink.set(telegramUserId, {
           token: linkToken,
-          phone: linkData.phone,
-          userId: linkData.userId,
           createdAt: Date.now(),
         });
-
-        const masked = this.maskPhone(linkData.phone);
+        const linkData = await this.getLinkToken(linkToken);
+        const extraHint = linkData
+          ? `📱 Profilingizdagi raqam: *${this.maskPhone(linkData.phone)}*\n\n`
+          : '';
         await ctx.reply(
-          `🔐 Hisobingizni ulash uchun telefon raqamingizni ulashing.\n\n` +
-            `📱 Havolada ko'rsatilgan raqam: *${masked}*\n\n` +
-            `Quyidagi tugma orqali telefon raqamingizni yuboring — u havolada ko'rsatilgan raqam bilan tekshiriladi:`,
+          `🔐 *Nuvita* hisobingizni Telegram bilan ulash uchun quyidagi tugma orqali *o'z telefon raqamingizni* yuboring.\n\n` +
+            extraHint +
+            `Kontakt qabul qilingach, havola (va raqam) tekshiriladi.`,
           {
             parse_mode: 'Markdown',
             ...Markup.keyboard([
@@ -326,65 +331,62 @@ export class TelegramService implements OnModuleInit {
         return;
       }
 
-      // Check if this is a pending link from /start link_XXX
-      const pending = this.pendingLinks.get(telegramUserId);
-      if (pending) {
-        // Token still valid?
-        if (Date.now() - pending.createdAt > this.TOKEN_EXPIRY) {
-          this.pendingLinks.delete(telegramUserId);
+      // /start link_… — web ulanish: tekshiruv faqat kontaktdan keyin
+      const webPending = this.pendingWebLink.get(telegramUserId);
+      if (webPending) {
+        this.pendingWebLink.delete(telegramUserId);
+        if (Date.now() - webPending.createdAt > this.TOKEN_EXPIRY) {
           await ctx.reply(
-            '⌛ Ulash havolasi muddati tugagan. Iltimos, profil sahifasidan qayta urinib ko\'ring.',
-            Markup.removeKeyboard(),
+            "⌛ Ulanish muddati tugagan. *nuvita.uz* → *Profil* → Telegramga ulash dan yangi havola oling.",
+            { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
           );
           return;
         }
 
-        // Check phone matches
-        if (this.normalizePhone(pending.phone) !== this.normalizePhone(phoneNumber)) {
+        const linkData = await this.getLinkToken(webPending.token);
+        if (!linkData) {
           await ctx.reply(
-            `❌ Ulashilgan raqam havola egasining raqamiga mos emas.\n\n` +
-              `📱 Havola raqami: *${this.maskPhone(pending.phone)}*\n` +
-              `📱 Siz yubordingiz: *${this.maskPhone(phoneNumber)}*\n\n` +
-              `Iltimos, to'g'ri akkauntdan yoki profildan qayta ulash havolasini oling.`,
-            {
-              parse_mode: 'Markdown',
-              ...Markup.removeKeyboard(),
-            },
+            '❌ Ulash havolasi yaroqsiz yoki muddati tugagan.\n\n' +
+              'Iltimos, *nuvita.uz* → *Profil* → «Telegramga ulash» dan yangi havola oling.',
+            { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
           );
           return;
         }
 
-        // Ensure TG account is not linked to another user
-        const existingTgUser = await this.prisma.user.findUnique({
+        const existingTgOnOther = await this.prisma.user.findUnique({
           where: { userId: telegramUserId },
         });
-        if (existingTgUser && existingTgUser.id !== pending.userId) {
-          this.pendingLinks.delete(telegramUserId);
+        if (existingTgOnOther && existingTgOnOther.id !== linkData.userId) {
           await ctx.reply(
-            '⚠️ Bu Telegram hisob boshqa foydalanuvchiga ulangan.',
+            '⚠️ Bu Telegram hisob boshqa foydalanuvchiga ulangan.\n\nBoshqa hisobdan foydalaning.',
             Markup.removeKeyboard(),
           );
           return;
         }
 
-        // Link!
+        if (this.normalizePhone(linkData.phone) !== this.normalizePhone(phoneNumber)) {
+          await ctx.reply(
+            `❌ Ulangan raqam profildagi raqam bilan mos emas.\n\n` +
+              `📱 Kutilayotgan: *${this.maskPhone(linkData.phone)}*\n` +
+              `📱 Yuborildi: *${this.maskPhone(phoneNumber)}*`,
+            { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
+          );
+          return;
+        }
+
         const linkedUser = await this.prisma.user.update({
-          where: { id: pending.userId },
+          where: { id: linkData.userId },
           data: {
             userId: telegramUserId,
             username: telegramUsername,
             fullName: telegramFullName || undefined,
           },
         });
-
-        this.deleteLinkToken(pending.token);
-        this.pendingLinks.delete(telegramUserId);
-
+        await this.deleteLinkToken(webPending.token);
         await ctx.reply(
-          `✅ Telefon raqam tasdiqlandi va Telegram hisobingiz profilga ulandi!`,
-          Markup.removeKeyboard(),
+          `✅ Telefon tasdiqlandi va Telegram hisobingiz *Nuvita* profilga ulandi!`,
+          { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
         );
-
         return this.handleRegisteredUser(ctx, linkedUser);
       }
 
@@ -438,7 +440,7 @@ export class TelegramService implements OnModuleInit {
       await this.handleRegisteredUser(ctx, createdUser);
 
       // Optional: offer a one-time password setup link for website login.
-      const pwToken = this.generatePasswordSetupToken(
+      const pwToken = await this.generatePasswordSetupToken(
         createdUser.id,
         phoneNumber,
         telegramUserId,
@@ -476,7 +478,11 @@ export class TelegramService implements OnModuleInit {
         return;
       }
 
-      const token = this.generatePasswordSetupToken(user.id, user.number, tgId);
+      const token = await this.generatePasswordSetupToken(
+        user.id,
+        user.number,
+        tgId,
+      );
       const miniAppLink = `https://t.me/nuvitauzbot/nuvitauz?startapp=${token}`;
       const actionWord = user.password ? "yangilash" : "o'rnatish";
       await ctx.reply(

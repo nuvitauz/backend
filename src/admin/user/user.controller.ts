@@ -67,10 +67,10 @@ export class AdminUserController {
   // Bitta chat sessiyasining xabarlari
   @Get(':id/chats/:sessionId')
   getUserChatMessages(
-    @Param('id', ParseIntPipe) _id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Param('sessionId', ParseIntPipe) sessionId: number,
   ) {
-    return this.adminUserService.getChatSessionMessages(sessionId);
+    return this.adminUserService.getChatSessionMessages(id, sessionId);
   }
 
   // Foydalanuvchi statusini yangilash (ACTIVE / NOCASH / BANNED)

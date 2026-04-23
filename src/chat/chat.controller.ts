@@ -11,8 +11,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ChatService } from './chat.service';
-import { CreateSessionDto, SendMessageDto } from './dto/chat.dto';
-import { OptionalJwtAuthGuard } from './optional-auth.guard';
+import { SendMessageDto } from './dto/chat.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('chat')
 export class ChatController {
@@ -20,20 +20,17 @@ export class ChatController {
 
   constructor(private readonly chatService: ChatService) {}
 
-  @UseGuards(OptionalJwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   @Post('session')
-  async createSession(@Body() dto: CreateSessionDto, @Req() req: any) {
+  async createSession(@Req() req: any) {
     try {
-      // Prefer the authenticated user (from JWT) over client-supplied fields —
-      // this guarantees every logged-in user's chat is correctly linked.
-      const authUserId: number | undefined = req?.user?.sub;
-      const finalUserId = authUserId ?? dto.userId;
-      return await this.chatService.createSession(finalUserId, dto.number);
+      return await this.chatService.createSession(req.user.sub);
     } catch (error: any) {
       this.logger.error(
         `createSession xatosi: ${error?.message}`,
         error?.stack,
       );
+      if (error instanceof HttpException) throw error;
       throw new HttpException(
         error?.message || 'Sessiya yaratishda xatolik',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -41,16 +38,20 @@ export class ChatController {
     }
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('session/:sessionId')
-  async getSession(@Param('sessionId') sessionId: string) {
-    const session = await this.chatService.getSession(sessionId);
+  async getSession(@Param('sessionId') sessionId: string, @Req() req: any) {
+    const session = await this.chatService.getSessionForUser(
+      sessionId,
+      req.user.sub,
+    );
     if (!session) {
       throw new HttpException('Session topilmadi', HttpStatus.NOT_FOUND);
     }
     return session;
   }
 
-  @UseGuards(OptionalJwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   @Post('message')
   async sendMessage(@Body() dto: SendMessageDto, @Req() req: any) {
     if (!dto?.sessionId || !dto?.content?.trim()) {
@@ -60,15 +61,15 @@ export class ChatController {
       );
     }
     try {
-      const authUserId: number | undefined = req?.user?.sub;
       return await this.chatService.sendMessage(
         dto.sessionId,
         dto.content,
-        authUserId,
+        req.user.sub,
         dto.lang,
       );
     } catch (error: any) {
       this.logger.error(`sendMessage xatosi: ${error?.message}`, error?.stack);
+      if (error instanceof HttpException) throw error;
       throw new HttpException(
         error?.message || 'Xabar yuborishda xatolik',
         HttpStatus.BAD_REQUEST,

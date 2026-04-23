@@ -52,8 +52,8 @@ export class AuthController {
 
   // Get registration token data (for Mini App)
   @Get('register-token/:token')
-  getRegisterToken(@Param('token') token: string) {
-    const data = this.telegramService.getRegistrationToken(token);
+  async getRegisterToken(@Param('token') token: string) {
+    const data = await this.telegramService.getRegistrationToken(token);
     if (!data) {
       throw new NotFoundException('Token topilmadi yoki muddati tugagan');
     }
@@ -68,7 +68,7 @@ export class AuthController {
   // Register with token
   @Post('register-with-token')
   async registerWithToken(@Body() body: { token: string; password: string }) {
-    const tokenData = this.telegramService.getRegistrationToken(body.token);
+    const tokenData = await this.telegramService.getRegistrationToken(body.token);
     if (!tokenData) {
       throw new NotFoundException('Token topilmadi yoki muddati tugagan');
     }
@@ -83,7 +83,7 @@ export class AuthController {
       }
     );
 
-    this.telegramService.deleteRegistrationToken(body.token);
+    await this.telegramService.deleteRegistrationToken(body.token);
 
     return result;
   }
@@ -114,8 +114,8 @@ export class AuthController {
    * and return minimal user context for the Mini App page.
    */
   @Get('password-token/:token')
-  getPasswordToken(@Param('token') token: string) {
-    const data = this.telegramService.getPasswordSetupToken(token);
+  async getPasswordToken(@Param('token') token: string) {
+    const data = await this.telegramService.getPasswordSetupToken(token);
     if (!data) {
       throw new NotFoundException('Token topilmadi yoki muddati tugagan');
     }
@@ -134,13 +134,13 @@ export class AuthController {
   async setPasswordWithToken(
     @Body() body: { token: string; password: string },
   ) {
-    const data = this.telegramService.getPasswordSetupToken(body.token);
+    const data = await this.telegramService.getPasswordSetupToken(body.token);
     if (!data) {
       throw new NotFoundException('Token topilmadi yoki muddati tugagan');
     }
 
     await this.authService.setPassword(data.userId, body.password);
-    this.telegramService.deletePasswordSetupToken(body.token);
+    await this.telegramService.deletePasswordSetupToken(body.token);
 
     // Also issue fresh tokens so the Mini App can auto-login after setup.
     const tokens = await this.authService.issueTokensForUser(data.userId);

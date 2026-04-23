@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
@@ -70,21 +75,21 @@ export class ChatService {
     }
   }
 
-  async createSession(userId?: number, number?: string) {
-    // If we know the userId, pull their phone too so the session is fully linked.
-    let finalNumber: string | null = number ?? null;
-    if (userId && !finalNumber) {
-      const u = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { number: true },
-      });
-      finalNumber = u?.number ?? null;
+  async createSession(userId: number) {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { number: true },
+    });
+    if (!u?.number) {
+      throw new ForbiddenException(
+        'Nuvita AI uchun avval profilda telefon raqamingizni saqlang.',
+      );
     }
 
     const session = await this.prisma.chatSession.create({
       data: {
-        userId: userId ?? null,
-        number: finalNumber,
+        userId,
+        number: u.number,
       },
     });
 
@@ -124,10 +129,59 @@ export class ChatService {
     };
   }
 
+  /** Mijoz o'z sessiyasini olishi (JWT + raqam tekshiruvi) */
+  async getSessionForUser(sessionId: string, userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { number: true },
+    });
+    if (!user?.number) {
+      throw new UnauthorizedException();
+    }
+    const session = await this.prisma.chatSession.findFirst({
+      where: {
+        sessionId,
+        OR: [{ userId }, { number: user.number }],
+      },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
+    });
+    if (!session) {
+      return null;
+    }
+    return {
+      sessionId: session.sessionId,
+      messages: session.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+      })),
+      createdAt: session.createdAt,
+    };
+  }
+
+  private async assertSessionBelongsToUser(
+    session: { userId: number | null; number: string | null },
+    userId: number,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { number: true },
+    });
+    if (!user?.number) {
+      throw new ForbiddenException();
+    }
+    const okId = session.userId === userId;
+    const okNum = session.number && session.number === user.number;
+    if (!okId && !okNum) {
+      throw new ForbiddenException('Bu suhbat sizga tegishli emas');
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     userMessage: string,
-    authUserId?: number,
+    authUserId: number,
     lang?: 'UZ' | 'RU' | 'EN',
   ) {
     const trimmed = (userMessage || '').trim();
@@ -149,9 +203,8 @@ export class ChatService {
       throw new Error('Session topilmadi');
     }
 
-    // Backfill linkage if the session was created as a guest and the user has
-    // since logged in. This recovers chats started before authentication.
-    if (authUserId && !session.userId) {
+    // Eski "mehmon" sessiyalarini bir marta user + number bilan to'ldirish
+    if (!session.userId) {
       const u = await this.prisma.user.findUnique({
         where: { id: authUserId },
         select: { number: true },
@@ -166,6 +219,8 @@ export class ChatService {
       session.userId = authUserId;
       if (!session.number && u?.number) session.number = u.number;
     }
+
+    await this.assertSessionBelongsToUser(session, authUserId);
 
     await this.prisma.chatMessage.create({
       data: {
