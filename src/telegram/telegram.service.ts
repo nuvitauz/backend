@@ -70,7 +70,7 @@ export class TelegramService implements OnModuleInit {
   }
 
   private botUsername(): string {
-    return (process.env.TELEGRAM_BOT_USERNAME || 'nuvita_testbot').replace(
+    return (process.env.TELEGRAM_BOT_USERNAME || 'nuvitauzbot').replace(
       /^@/,
       '',
     );
