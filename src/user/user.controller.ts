@@ -59,7 +59,7 @@ export class UserController {
       user.number,
       user.id,
     );
-    const botLink = `https://t.me/nuvitauzbot?start=${token}`;
+    const botLink = this.telegramService.getBotDeepLinkStartParam(token);
     
     return { 
       linked: false, 

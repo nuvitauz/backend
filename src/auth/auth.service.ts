@@ -3,13 +3,11 @@ import {
   UnauthorizedException,
   HttpException,
   HttpStatus,
-  BadRequestException,
-  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
+import { AuthTokenType } from '../../generated/prisma';
 
 interface TelegramUser {
   id: number;
@@ -27,116 +25,76 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
+  /**
+   * Kirish UI: telefon kiritilgach qaysi oqim — mavjud (TG bog'langan), TG yo'q, yoki yangi.
+   */
   async checkPhone(number: string) {
     const user = await this.prisma.user.findUnique({ where: { number } });
-    return {
-      exists: !!user,
-      hasPassword: !!(user && user.password),
-      linkedToTelegram: !!(user && user.userId),
-    };
+    if (user) {
+      if (user.userId) {
+        return { flow: 'EXISTING_LINKED' as const };
+      }
+      return { flow: 'EXISTING_NO_TELEGRAM' as const };
+    }
+    return { flow: 'NEW_USER' as const };
   }
 
-  async register(
-    number: string,
-    passwordString: string,
-    telegramData?: { userId?: string; username?: string; fullName?: string },
-  ) {
-    const existingByPhone = await this.prisma.user.findUnique({ where: { number } });
+  /** Brauzer kirish: telefon + bot yuborgan 6 xonali kod (`loginOtp`). */
+  async login(number: string, passwordString: string) {
+    const code = (passwordString || '').trim();
+    const now = new Date();
 
-    // If this phone already exists as a TG-only user (no password), just set the password
-    // instead of throwing conflict. This allows the website to "claim" a TG-created account.
-    if (existingByPhone) {
-      if (!existingByPhone.password) {
-        const hashedPassword = await bcrypt.hash(passwordString, 10);
-        const updated = await this.prisma.user.update({
-          where: { id: existingByPhone.id },
+    const user = await this.prisma.user.findUnique({ where: { number } });
+
+    if (user) {
+      if (
+        user.loginOtp &&
+        user.loginOtpExpiresAt &&
+        user.loginOtpExpiresAt > now &&
+        code === user.loginOtp
+      ) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { loginOtp: null, loginOtpExpiresAt: null },
+        });
+        return this.generateTokens(user.id, user.number || String(user.id));
+      }
+
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const tg = await this.prisma.tgUser.findUnique({ where: { number } });
+    if (tg) {
+      const challenge = await this.prisma.authFlowToken.findFirst({
+        where: {
+          type: AuthTokenType.TG_WEB_OTP,
+          phone: number,
+          otpCode: code,
+          consumedAt: null,
+          expiresAt: { gt: now },
+        },
+      });
+      if (challenge) {
+        const created = await this.prisma.user.create({
           data: {
-            password: hashedPassword,
-            userId: telegramData?.userId || existingByPhone.userId,
-            username: telegramData?.username || existingByPhone.username,
-            fullName: telegramData?.fullName || existingByPhone.fullName,
+            number: tg.number,
+            userId: tg.telegramId,
+            username: tg.username,
+            fullName: tg.fullName,
           },
         });
-        return this.generateTokens(updated.id, updated.number || String(updated.id));
-      }
-      throw new HttpException("Bu telefon raqam allaqachon ro'yxatdan o'tgan", HttpStatus.CONFLICT);
-    }
-
-    if (telegramData?.userId) {
-      const existingByTelegramId = await this.prisma.user.findUnique({
-        where: { userId: telegramData.userId },
-      });
-      if (existingByTelegramId) {
-        // Telegram-only account (no phone yet) → attach phone + password
-        if (!existingByTelegramId.number) {
-          const hashedPassword = await bcrypt.hash(passwordString, 10);
-          const updated = await this.prisma.user.update({
-            where: { id: existingByTelegramId.id },
-            data: {
-              number,
-              password: hashedPassword,
-              username: telegramData.username || existingByTelegramId.username,
-              fullName: telegramData.fullName || existingByTelegramId.fullName,
-            },
-          });
-          return this.generateTokens(updated.id, updated.number || String(updated.id));
-        }
-        throw new HttpException("Bu Telegram hisob allaqachon ro'yxatdan o'tgan", HttpStatus.CONFLICT);
+        await this.prisma.tgUser.delete({ where: { id: tg.id } });
+        await this.prisma.authFlowToken.deleteMany({
+          where: { type: AuthTokenType.TG_WEB_OTP, phone: tg.number },
+        });
+        return this.generateTokens(
+          created.id,
+          created.number || String(created.id),
+        );
       }
     }
 
-    try {
-      const hashedPassword = await bcrypt.hash(passwordString, 10);
-      const user = await this.prisma.user.create({
-        data: {
-          number,
-          password: hashedPassword,
-          userId: telegramData?.userId || null,
-          username: telegramData?.username || null,
-          fullName: telegramData?.fullName || null,
-        },
-      });
-
-      return this.generateTokens(user.id, user.number || String(user.id));
-    } catch (error: any) {
-      if (error.code === 'P2002') {
-        const target = error.meta?.target;
-        if (target?.includes('user_id')) {
-          throw new HttpException("Bu Telegram hisob allaqachon ro'yxatdan o'tgan", HttpStatus.CONFLICT);
-        }
-        if (target?.includes('number')) {
-          throw new HttpException("Bu telefon raqam allaqachon ro'yxatdan o'tgan", HttpStatus.CONFLICT);
-        }
-        throw new HttpException("Ma'lumotlar takrorlanmoqda", HttpStatus.CONFLICT);
-      }
-      throw error;
-    }
-  }
-
-  async login(number: string, passwordString: string) {
-    const user = await this.prisma.user.findUnique({ where: { number } });
-    if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    // Telegram-only user (no password set on website yet)
-    if (!user.password) {
-      throw new HttpException(
-        {
-          message:
-            "Sizda hali parol o'rnatilmagan. Telegram botda /parol buyrug'ini yuboring yoki botdan kelgan havola orqali parol o'rnating.",
-          code: 'PASSWORD_NOT_SET',
-        },
-        HttpStatus.CONFLICT,
-      );
-    }
-
-    const isMatch = await bcrypt.compare(passwordString, user.password);
-    if (!isMatch) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    return this.generateTokens(user.id, user.number || String(user.id));
+    throw new UnauthorizedException('Invalid credentials');
   }
 
   private async generateTokens(userId: number, number: string) {
@@ -222,7 +180,44 @@ export class AuthService {
     });
 
     if (!user) {
-      // Not registered yet → ask the user to complete onboarding via the bot.
+      const staging = await this.prisma.tgUser.findUnique({
+        where: { telegramId: tgUserId },
+      });
+      if (staging) {
+        const created = await this.prisma.user.create({
+          data: {
+            number: staging.number,
+            userId: staging.telegramId,
+            username: tgUser.username || staging.username,
+            fullName: staging.fullName || fullName || null,
+          },
+        });
+        await this.prisma.tgUser.delete({ where: { id: staging.id } });
+        const tokens = await this.generateTokens(
+          created.id,
+          created.number || String(created.id),
+        );
+        return {
+          ...tokens,
+          needsOnboarding: false,
+          user: {
+            id: created.id,
+            number: created.number,
+            userId: created.userId,
+            username: created.username,
+            fullName: created.fullName,
+            email: created.email,
+            address: created.address,
+            dateOfBirth: created.dateOfBirth,
+            gender: created.gender,
+            lang: created.lang,
+            role: created.role,
+            profileComplete: created.profileComplete,
+            photoUrl: tgUser.photo_url || null,
+          },
+        };
+      }
+
       return {
         needsOnboarding: true,
         message:
@@ -263,46 +258,9 @@ export class AuthService {
         lang: refreshed.lang,
         role: refreshed.role,
         profileComplete: refreshed.profileComplete,
-        hasPassword: !!refreshed.password,
         photoUrl: tgUser.photo_url || null,
       },
     };
   }
 
-  /**
-   * Set or change password for the currently authenticated user.
-   * Used when a TG-onboarded user wants to enable website (phone+password) login.
-   */
-  async setPassword(userId: number, newPassword: string) {
-    if (!newPassword || newPassword.length < 6) {
-      throw new BadRequestException("Parol kamida 6 ta belgidan iborat bo'lishi kerak");
-    }
-
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
-
-    if (!user.number) {
-      throw new BadRequestException(
-        "Saytga kirish uchun avval telefon raqamingizni ulashing (Telegram botda /start).",
-      );
-    }
-
-    const hashed = await bcrypt.hash(newPassword, 10);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { password: hashed },
-    });
-
-    return { success: true, message: "Parol muvaffaqiyatli o'rnatildi" };
-  }
-
-  /**
-   * Public helper to mint fresh tokens for a known user id
-   * (e.g. right after a password-token consumption).
-   */
-  async issueTokensForUser(userId: number) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
-    return this.generateTokens(user.id, user.number || String(user.id));
-  }
 }

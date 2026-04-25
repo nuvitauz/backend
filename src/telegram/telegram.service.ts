@@ -2,28 +2,11 @@ import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { Telegraf, Markup } from 'telegraf';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthTokenType } from '../../generated/prisma';
-import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
-
-interface RegistrationToken {
-  phone: string;
-  telegramId: string;
-  username: string;
-  fullName: string;
-  createdAt: number;
-}
 
 interface LinkToken {
   phone: string;
   userId: number;
-  createdAt: number;
-}
-
-// For already-registered TG users who want to set/reset their website password.
-interface PasswordSetupToken {
-  userId: number;
-  phone: string;
-  telegramId: string;
   createdAt: number;
 }
 
@@ -33,7 +16,8 @@ export class TelegramService implements OnModuleInit {
   private readonly logger = new Logger(TelegramService.name);
   private readonly MINI_APP_URL: string;
   private readonly WEBSITE_URL = 'https://nuvita.uz';
-  
+  private readonly OTP_TTL_MS = 2 * 60 * 1000;
+
   private readonly TOKEN_EXPIRY = 60 * 60 * 1000; // 1 hour
 
   /** /start link_… dan keyin — kontakt yuborilguncha saqlanadi; token DB da tekshiriladi */
@@ -75,6 +59,7 @@ export class TelegramService implements OnModuleInit {
         this.pendingWebLink.delete(tgId);
       }
     }
+    void this.clearExpiredWebLoginOtps();
     void this.prisma.authFlowToken
       .deleteMany({
         where: {
@@ -82,6 +67,57 @@ export class TelegramService implements OnModuleInit {
         },
       })
       .catch(() => {});
+  }
+
+  private botUsername(): string {
+    return (process.env.TELEGRAM_BOT_USERNAME || 'nuvita_testbot').replace(
+      /^@/,
+      '',
+    );
+  }
+
+  private generateOtp(): string {
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  /** Muddati o'tgan brauzer kirish kodlarini tozalaydi */
+  private async clearExpiredWebLoginOtps() {
+    const cutoff = new Date();
+    await this.prisma.user.updateMany({
+      where: { loginOtpExpiresAt: { lt: cutoff } },
+      data: { loginOtp: null, loginOtpExpiresAt: null },
+    });
+    await this.prisma.authFlowToken.deleteMany({
+      where: {
+        type: AuthTokenType.TG_WEB_OTP,
+        expiresAt: { lt: cutoff },
+      },
+    });
+  }
+
+  /** TgUser telefoni uchun brauzer OTP — telefon `tg_users`da noyob, `telegram_id` bu yerda kerak emas */
+  private async upsertTgWebLoginOtp(
+    phoneNumber: string,
+    otp: string,
+    otpExpires: Date,
+  ): Promise<void> {
+    await this.prisma.authFlowToken.updateMany({
+      where: {
+        type: AuthTokenType.TG_WEB_OTP,
+        phone: phoneNumber,
+        consumedAt: null,
+      },
+      data: { consumedAt: new Date() },
+    });
+    await this.prisma.authFlowToken.create({
+      data: {
+        token: 'tgotp_' + this.generateToken(),
+        type: AuthTokenType.TG_WEB_OTP,
+        phone: phoneNumber,
+        expiresAt: otpExpires,
+        otpCode: otp,
+      },
+    });
   }
 
   private linkRowToData(row: {
@@ -95,37 +131,6 @@ export class TelegramService implements OnModuleInit {
       userId: row.userId,
       createdAt: row.createdAt.getTime(),
     };
-  }
-
-  /** Ro'yxatdan o'tish tokeni (kam ishlatiladi) — DB */
-  public async getRegistrationToken(
-    token: string,
-  ): Promise<RegistrationToken | null> {
-    const row = await this.prisma.authFlowToken.findFirst({
-      where: {
-        token,
-        type: AuthTokenType.REGISTER,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-    });
-    if (!row || !row.phone || !row.telegramId) {
-      return null;
-    }
-    return {
-      phone: row.phone,
-      telegramId: row.telegramId,
-      username: row.username ?? '',
-      fullName: row.fullName ?? '',
-      createdAt: row.createdAt.getTime(),
-    };
-  }
-
-  public async deleteRegistrationToken(token: string): Promise<void> {
-    await this.prisma.authFlowToken.updateMany({
-      where: { token, type: AuthTokenType.REGISTER },
-      data: { consumedAt: new Date() },
-    });
   }
 
   public async generateLinkToken(phone: string, userId: number): Promise<string> {
@@ -162,87 +167,23 @@ export class TelegramService implements OnModuleInit {
     });
   }
 
-  public async generatePasswordSetupToken(
-    userId: number,
-    phone: string,
-    telegramId: string,
-  ): Promise<string> {
-    const token = 'pw_' + this.generateToken();
-    await this.prisma.authFlowToken.create({
-      data: {
-        token,
-        type: AuthTokenType.PASSWORD_SETUP,
-        userId,
-        phone,
-        telegramId,
-        expiresAt: new Date(Date.now() + this.TOKEN_EXPIRY),
-      },
-    });
-    return token;
-  }
-
-  public async getPasswordSetupToken(
-    token: string,
-  ): Promise<PasswordSetupToken | null> {
-    const row = await this.prisma.authFlowToken.findFirst({
-      where: {
-        token,
-        type: AuthTokenType.PASSWORD_SETUP,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-    });
-    if (!row || !row.phone || !row.telegramId || row.userId == null) {
-      return null;
-    }
-    return {
-      userId: row.userId,
-      phone: row.phone,
-      telegramId: row.telegramId,
-      createdAt: row.createdAt.getTime(),
-    };
-  }
-
-  public async deletePasswordSetupToken(token: string): Promise<void> {
-    await this.prisma.authFlowToken.updateMany({
-      where: { token, type: AuthTokenType.PASSWORD_SETUP },
-      data: { consumedAt: new Date() },
-    });
-  }
-
-  /**
-   * Called from /auth/request-password-link: user entered phone on /login
-   * but has no password. We find their TG chatId and DM them a Mini App link.
-   */
-  public async sendPasswordSetupLinkByPhone(
-    phone: string,
-  ): Promise<{ sent: boolean; reason?: string }> {
-    const user = await this.prisma.user.findUnique({ where: { number: phone } });
-    if (!user) return { sent: false, reason: 'USER_NOT_FOUND' };
-    if (user.password) return { sent: false, reason: 'ALREADY_HAS_PASSWORD' };
-    if (!user.userId) return { sent: false, reason: 'NO_TELEGRAM_LINKED' };
-
-    const token = await this.generatePasswordSetupToken(
-      user.id,
-      user.number || phone,
-      user.userId,
+  private async sendWebLoginOtpDm(
+    chatId: string,
+    code: string,
+  ): Promise<void> {
+    await this.bot.telegram.sendMessage(
+      chatId,
+      `🔑 *Saytga kirish kodingiz:* \`${code}\`\n\n` +
+        `⏱ Kod *2 daqiqa* davomida amal qiladi.\n` +
+        `🌐 *nuvita.uz* → Kirish: telefon va kodni kiriting.\n\n` +
+        `_Yangi kod kerak bo'lsa:_ /code`,
+      { parse_mode: 'Markdown' },
     );
-    const miniAppLink = `https://t.me/nuvitauzbot/nuvitauz?startapp=${token}`;
-    try {
-      await this.bot.telegram.sendMessage(
-        user.userId,
-        `🔐 Sayt uchun parol o'rnatish\n\n` +
-          `Siz saytdan kirish uchun parol so'radingiz. Quyidagi havola orqali parolingizni o'rnating.\n\n` +
-          `⏱ Havola 1 soat amal qiladi.`,
-        Markup.inlineKeyboard([
-          [Markup.button.url("🔐 Parol o'rnatish", miniAppLink)],
-        ]),
-      );
-      return { sent: true };
-    } catch (e) {
-      this.logger.error('Could not send password setup link', e);
-      return { sent: false, reason: 'TELEGRAM_SEND_FAILED' };
-    }
+  }
+
+  /** Profil → Telegram ulash havolasi: \`https://t.me/<bot>?start=link_...\` */
+  public getBotDeepLinkStartParam(startParam: string): string {
+    return `https://t.me/${this.botUsername()}?start=${startParam}`;
   }
 
   onModuleInit() {
@@ -280,13 +221,34 @@ export class TelegramService implements OnModuleInit {
         return;
       }
       
-      // Check if user is registered by TG userId
       const user = await this.prisma.user.findUnique({
-        where: { userId: telegramUserId }
+        where: { userId: telegramUserId },
       });
 
       if (user) {
-        // User is registered - show welcome message based on role
+        if (user.number) {
+          const otp = this.generateOtp();
+          const otpExpires = new Date(Date.now() + this.OTP_TTL_MS);
+          const updated = await this.prisma.user.update({
+            where: { id: user.id },
+            data: {
+              loginOtp: otp,
+              loginOtpExpiresAt: otpExpires,
+              username: telegramUsername || user.username,
+              fullName: user.fullName || telegramFullName,
+            },
+          });
+          try {
+            await this.sendWebLoginOtpDm(telegramUserId, otp);
+          } catch (e) {
+            this.logger.error('sendWebLoginOtpDm /start', e);
+          }
+          await ctx.reply(
+            '🔑 *Kod yuborildi* (shaxsiy xabar). `/code` — yangi kod.',
+            { parse_mode: 'Markdown' },
+          );
+          return this.handleRegisteredUser(ctx, updated);
+        }
         return this.handleRegisteredUser(ctx, user);
       }
 
@@ -390,106 +352,131 @@ export class TelegramService implements OnModuleInit {
         return this.handleRegisteredUser(ctx, linkedUser);
       }
 
-      // Check if user exists with this phone number
       let user = await this.prisma.user.findUnique({
         where: { number: phoneNumber },
       });
 
+      const otp = this.generateOtp();
+      const otpExpires = new Date(Date.now() + this.OTP_TTL_MS);
+
       if (user) {
-        // Phone exists in DB - link TG account and welcome.
-        // This also handles COURIER/ADMIN accounts that were pre-seeded by
-        // an admin with their phone number — on first /start + contact share
-        // they get linked to their TG and see the role-specific menu.
+        if (user.userId && user.userId !== telegramUserId) {
+          await ctx.reply(
+            "❌ Bu telefon raqami boshqa Telegram akkauntiga ulangan.",
+            Markup.removeKeyboard(),
+          );
+          return;
+        }
+
         user = await this.prisma.user.update({
           where: { number: phoneNumber },
           data: {
             userId: telegramUserId,
             username: telegramUsername || user.username,
             fullName: user.fullName || telegramFullName,
+            loginOtp: otp,
+            loginOtpExpiresAt: otpExpires,
           },
         });
 
-        await ctx.reply(
-          `✅ Telegram hisobingiz muvaffaqiyatli bog'landi!`,
-          Markup.removeKeyboard(),
-        );
+        try {
+          await this.sendWebLoginOtpDm(telegramUserId, otp);
+        } catch (e) {
+          this.logger.error('sendWebLoginOtpDm', e);
+        }
 
+        await ctx.reply(
+          '✅ *Kod yuborildi* (shaxsiy xabar). Saytda kiriting. ⏱ *2 daqiqa*',
+          { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
+        );
         return this.handleRegisteredUser(ctx, user);
       }
 
-      // Truly new user — create the account RIGHT NOW (no password required).
-      // Password is optional and can be set later from the profile page or
-      // via /parol command. This unblocks the funnel: user can start shopping
-      // immediately in the Mini App.
-      const createdUser = await this.prisma.user.create({
-        data: {
+      await this.prisma.tgUser.upsert({
+        where: { telegramId: telegramUserId },
+        create: {
+          telegramId: telegramUserId,
           number: phoneNumber,
-          userId: telegramUserId,
+          username: telegramUsername,
+          fullName: telegramFullName,
+        },
+        update: {
+          number: phoneNumber,
           username: telegramUsername,
           fullName: telegramFullName,
         },
       });
+      await this.upsertTgWebLoginOtp(phoneNumber, otp, otpExpires);
+
+      try {
+        await this.sendWebLoginOtpDm(telegramUserId, otp);
+      } catch (e) {
+        this.logger.error('sendWebLoginOtpDm tg staging', e);
+      }
 
       await ctx.reply(
-        `🎉 Ro'yxatdan o'tdingiz, ${telegramFullName || phoneNumber}!\n\n` +
-          `Do'konga kirib xaridni boshlashingiz mumkin.`,
-        Markup.removeKeyboard(),
+        '✅ *Kod yuborildi* (shaxsiy xabar). Ro\'yxatni yakunlash: sayt. ⏱ *2 daqiqa*\n\nDo\'kon:',
+        {
+          parse_mode: 'Markdown',
+          ...Markup.removeKeyboard(),
+        },
       );
 
-      // Welcome + Mini App button via role-aware menu.
-      await this.handleRegisteredUser(ctx, createdUser);
-
-      // Optional: offer a one-time password setup link for website login.
-      const pwToken = await this.generatePasswordSetupToken(
-        createdUser.id,
-        phoneNumber,
-        telegramUserId,
-      );
-      const pwLink = `https://t.me/nuvitauzbot/nuvitauz?startapp=${pwToken}`;
       await ctx.reply(
-        `🔐 Sayt orqali ham kirishni xohlaysizmi?\n\n` +
-          `Quyidagi havola orqali parol o'rnatishingiz mumkin (ixtiyoriy).\n` +
-          `Bu parol keyinchalik brauzerda saytga kirish uchun kerak bo'ladi.\n\n` +
-          `⏱ Havola 1 soat amal qiladi. Keyinchalik istalgan vaqt /parol buyrug'i orqali ham olishingiz mumkin.`,
+        `🛒 *Nuvita*`,
         Markup.inlineKeyboard([
-          [Markup.button.url("🔐 Sayt paroli o'rnatish", pwLink)],
+          [Markup.button.webApp("🛒 Do'konga kirish", this.MINI_APP_URL)],
         ]),
       );
     });
 
-    // /parol — issue a fresh password-setup link to a registered TG user.
-    this.bot.command('parol', async (ctx) => {
+    this.bot.command('code', async (ctx) => {
       const tgId = String(ctx.from.id);
+      const otp = this.generateOtp();
+      const otpExpires = new Date(Date.now() + this.OTP_TTL_MS);
+
       const user = await this.prisma.user.findUnique({
         where: { userId: tgId },
       });
-
-      if (!user) {
+      if (user?.number) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            loginOtp: otp,
+            loginOtpExpiresAt: otpExpires,
+          },
+        });
+        try {
+          await this.sendWebLoginOtpDm(tgId, otp);
+        } catch (e) {
+          this.logger.error('sendWebLoginOtpDm /code', e);
+        }
         await ctx.reply(
-          "Akkaunt topilmadi. Iltimos, avval /start bosib telefon raqamingizni ulashing.",
+          "✅ Yangi kod yuborildi (shaxsiy xabar). *2 daqiqa* amal qiladi.",
+          { parse_mode: 'Markdown' },
         );
         return;
       }
 
-      if (!user.number) {
+      const tg = await this.prisma.tgUser.findUnique({
+        where: { telegramId: tgId },
+      });
+      if (tg) {
+        await this.upsertTgWebLoginOtp(tg.number, otp, otpExpires);
+        try {
+          await this.sendWebLoginOtpDm(tgId, otp);
+        } catch (e) {
+          this.logger.error('sendWebLoginOtpDm /code tg', e);
+        }
         await ctx.reply(
-          "Parol o'rnatish uchun avval telefon raqamingizni ulashish kerak. /start bosing.",
+          "✅ Yangi kod yuborildi. *nuvita.uz* saytida kiriting.",
+          { parse_mode: 'Markdown' },
         );
         return;
       }
 
-      const token = await this.generatePasswordSetupToken(
-        user.id,
-        user.number,
-        tgId,
-      );
-      const miniAppLink = `https://t.me/nuvitauzbot/nuvitauz?startapp=${token}`;
-      const actionWord = user.password ? "yangilash" : "o'rnatish";
       await ctx.reply(
-        `🔐 Sayt parolini ${actionWord}\n\n⏱ Havola 1 soat amal qiladi.`,
-        Markup.inlineKeyboard([
-          [Markup.button.url(`🔐 Parol ${actionWord}`, miniAppLink)],
-        ]),
+        "Avval /start bosing va o'z telefon raqamingizni ulashing.",
       );
     });
 

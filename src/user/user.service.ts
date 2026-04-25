@@ -20,7 +20,6 @@ export class UserService {
         gender: true,
         lang: true,
         role: true,
-        password: true,
         profileComplete: true,
         createdAt: true,
       },
@@ -28,8 +27,7 @@ export class UserService {
 
     if (!user) throw new NotFoundException('Foydalanuvchi topilmadi');
 
-    const { password, ...safe } = user;
-    return { ...safe, hasPassword: !!password };
+    return user;
   }
 
   async updateProfile(userId: number, data: any) {
@@ -67,13 +65,11 @@ export class UserService {
         gender: true,
         lang: true,
         role: true,
-        password: true,
         profileComplete: true,
         createdAt: true,
       },
     });
 
-    const { password, ...safe } = updatedUser;
-    return { ...safe, hasPassword: !!password };
+    return updatedUser;
   }
 }
