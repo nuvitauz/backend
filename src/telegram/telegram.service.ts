@@ -150,9 +150,50 @@ export class TelegramService implements OnModuleInit {
       `🔑 *Saytga kirish kodingiz:* \`${code}\`\n\n` +
         `⏱ Kod *2 daqiqa* davomida amal qiladi.\n` +
         `🌐 *nuvita.uz* → Kirish yoki ro'yxatdan o'tish: telefon va kod.\n\n` +
-        `_Yangi kod kerak bo'lsa:_ /code`,
+        `_Yangi kod:_ /code`,
       { parse_mode: 'Markdown' },
     );
+  }
+
+  /** Brauzer kirish OTP — `users` yoki `tg_users` (/code va inline «Kodni yangilash»). */
+  private async refreshWebLoginOtpForTelegramId(
+    tgId: string,
+  ): Promise<'user' | 'tg' | 'none'> {
+    const otp = this.generateOtp();
+    const otpExpires = new Date(Date.now() + this.OTP_TTL_MS);
+
+    const user = await this.prisma.user.findUnique({
+      where: { userId: tgId },
+    });
+    if (user?.number) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { loginOtp: otp, loginOtpExpiresAt: otpExpires },
+      });
+      try {
+        await this.sendWebLoginOtpDm(tgId, otp);
+      } catch (e) {
+        this.logger.error('sendWebLoginOtpDm refresh user', e);
+      }
+      return 'user';
+    }
+
+    const tg = await this.prisma.tgUser.findUnique({
+      where: { telegramId: tgId },
+    });
+    if (tg) {
+      await this.prisma.tgUser.update({
+        where: { id: tg.id },
+        data: { loginOtp: otp, loginOtpExpiresAt: otpExpires },
+      });
+      try {
+        await this.sendWebLoginOtpDm(tgId, otp);
+      } catch (e) {
+        this.logger.error('sendWebLoginOtpDm refresh tg', e);
+      }
+      return 'tg';
+    }
+    return 'none';
   }
 
   /** Profil → Telegram ulash havolasi: \`https://t.me/<bot>?start=link_...\` */
@@ -227,10 +268,7 @@ export class TelegramService implements OnModuleInit {
       }
 
       await ctx.reply(
-        "👋 *Nuvita*\n\n" +
-          "Saytga kirish yoki ro'yxatdan o'tish: quyidagi tugma orqali *o'z telefon kontactingizni* yuboring — 6 xonali kod shu yerga keladi (⏱ *2 daqiqa*).\n\n" +
-          "Keyin *nuvita.uz* → *Kirish* da shu raqam va kodni kiriting.\n\n" +
-          "_Kodni yangilash:_ /code",
+        "👋 *Nuvita*\n\nPastdagi tugma orqali *o'z telefon kontactingizni* yuboring.",
         {
           parse_mode: 'Markdown',
           ...Markup.keyboard([
@@ -428,67 +466,46 @@ export class TelegramService implements OnModuleInit {
       }
 
       await ctx.reply(
-        '✅ *Kod yuborildi* (shaxsiy xabar). Ro\'yxatni yakunlash: sayt. ⏱ *2 daqiqa*\n\nDo\'kon:',
+        '✅ *Kod* shaxsiy xabarda.',
         {
           parse_mode: 'Markdown',
-          ...Markup.removeKeyboard(),
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Kodni yangilash', 'refresh_web_otp'),
+              Markup.button.webApp("🛒 Do'konga kirish", this.MINI_APP_URL),
+            ],
+          ]),
         },
       );
+    });
 
-      await ctx.reply(
-        `🛒 *Nuvita*`,
-        Markup.inlineKeyboard([
-          [Markup.button.webApp("🛒 Do'konga kirish", this.MINI_APP_URL)],
-        ]),
-      );
+    this.bot.action('refresh_web_otp', async (ctx) => {
+      const q = ctx.callbackQuery;
+      if (!q?.id) return;
+      const tgId = String(ctx.from?.id ?? '');
+      const kind = await this.refreshWebLoginOtpForTelegramId(tgId);
+      if (kind === 'none') {
+        await ctx.telegram.answerCbQuery(q.id, "Avval /start va kontakt yuboring", {
+          show_alert: true,
+        });
+        return;
+      }
+      await ctx.telegram.answerCbQuery(q.id, 'Yangi kod yuborildi');
     });
 
     this.bot.command('code', async (ctx) => {
       const tgId = String(ctx.from.id);
-      const otp = this.generateOtp();
-      const otpExpires = new Date(Date.now() + this.OTP_TTL_MS);
-
-      const user = await this.prisma.user.findUnique({
-        where: { userId: tgId },
-      });
-      if (user?.number) {
-        await this.prisma.user.update({
-          where: { id: user.id },
-          data: {
-            loginOtp: otp,
-            loginOtpExpiresAt: otpExpires,
-          },
-        });
-        try {
-          await this.sendWebLoginOtpDm(tgId, otp);
-        } catch (e) {
-          this.logger.error('sendWebLoginOtpDm /code', e);
-        }
+      const kind = await this.refreshWebLoginOtpForTelegramId(tgId);
+      if (kind === 'user') {
         await ctx.reply(
           "✅ Yangi kod yuborildi (shaxsiy xabar). *2 daqiqa* amal qiladi.",
           { parse_mode: 'Markdown' },
         );
         return;
       }
-
-      const tg = await this.prisma.tgUser.findUnique({
-        where: { telegramId: tgId },
-      });
-      if (tg) {
-        await this.prisma.tgUser.update({
-          where: { id: tg.id },
-          data: {
-            loginOtp: otp,
-            loginOtpExpiresAt: otpExpires,
-          },
-        });
-        try {
-          await this.sendWebLoginOtpDm(tgId, otp);
-        } catch (e) {
-          this.logger.error('sendWebLoginOtpDm /code tg', e);
-        }
+      if (kind === 'tg') {
         await ctx.reply(
-          "✅ Yangi kod yuborildi. *nuvita.uz* saytida kiriting.",
+          '✅ Yangi kod shaxsiy xabarda. *nuvita.uz* da kiriting.',
           { parse_mode: 'Markdown' },
         );
         return;
