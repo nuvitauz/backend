@@ -3,6 +3,7 @@ import { Telegraf, Markup } from 'telegraf';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthTokenType } from '../../generated/prisma';
 import * as crypto from 'crypto';
+import { normalizeUzbekPhone } from '../common/uzbek-phone';
 
 interface LinkToken {
   phone: string;
@@ -91,9 +92,6 @@ export class TelegramService implements OnModuleInit {
       where: { loginOtpExpiresAt: { lt: cutoff } },
       data: { loginOtp: null, loginOtpExpiresAt: null },
     });
-    await this.prisma.pendingSitePhone.deleteMany({
-      where: { expiresAt: { lt: cutoff } },
-    });
   }
 
   private linkRowToData(row: {
@@ -151,7 +149,7 @@ export class TelegramService implements OnModuleInit {
       chatId,
       `🔑 *Saytga kirish kodingiz:* \`${code}\`\n\n` +
         `⏱ Kod *2 daqiqa* davomida amal qiladi.\n` +
-        `🌐 *nuvita.uz* → Kirish: telefon va kodni kiriting.\n\n` +
+        `🌐 *nuvita.uz* → Kirish yoki ro'yxatdan o'tish: telefon va kod.\n\n` +
         `_Yangi kod kerak bo'lsa:_ /code`,
       { parse_mode: 'Markdown' },
     );
@@ -229,7 +227,10 @@ export class TelegramService implements OnModuleInit {
       }
 
       await ctx.reply(
-        "👋 *Nuvita*\n\nYangi akkaunt: avval *nuvita.uz* → *Kirish* da telefon raqamingizni kiriting, keyin bu yerga qaytib /start bosing va kontaktingizni yuboring.",
+        "👋 *Nuvita*\n\n" +
+          "Saytga kirish yoki ro'yxatdan o'tish: quyidagi tugma orqali *o'z telefon kontactingizni* yuboring — 6 xonali kod shu yerga keladi (⏱ *2 daqiqa*).\n\n" +
+          "Keyin *nuvita.uz* → *Kirish* da shu raqam va kodni kiriting.\n\n" +
+          "_Kodni yangilash:_ /code",
         {
           parse_mode: 'Markdown',
           ...Markup.keyboard([
@@ -306,10 +307,16 @@ export class TelegramService implements OnModuleInit {
           return;
         }
 
-        if (this.normalizePhone(linkData.phone) !== this.normalizePhone(phoneNumber)) {
+        const linkPhoneNorm = normalizeUzbekPhone(linkData.phone || '');
+        const contactPhoneNorm = normalizeUzbekPhone(phoneNumber);
+        if (
+          !linkPhoneNorm ||
+          !contactPhoneNorm ||
+          linkPhoneNorm !== contactPhoneNorm
+        ) {
           await ctx.reply(
             `❌ Ulangan raqam profildagi raqam bilan mos emas.\n\n` +
-              `📱 Kutilayotgan: *${this.maskPhone(linkData.phone)}*\n` +
+              `📱 Kutilayotgan: *${this.maskPhone(linkData.phone || '')}*\n` +
               `📱 Yuborildi: *${this.maskPhone(phoneNumber)}*`,
             { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
           );
@@ -332,8 +339,17 @@ export class TelegramService implements OnModuleInit {
         return this.handleRegisteredUser(ctx, linkedUser);
       }
 
+      const canonical = normalizeUzbekPhone(phoneNumber);
+      if (!canonical) {
+        await ctx.reply(
+          "❌ Telefon raqami tanilmadi. Faqat *O'zbekiston* raqami (+998…) qabul qilinadi.",
+          { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
+        );
+        return;
+      }
+
       let user = await this.prisma.user.findUnique({
-        where: { number: phoneNumber },
+        where: { number: canonical },
       });
 
       const otp = this.generateOtp();
@@ -349,7 +365,7 @@ export class TelegramService implements OnModuleInit {
         }
 
         user = await this.prisma.user.update({
-          where: { number: phoneNumber },
+          where: { number: canonical },
           data: {
             userId: telegramUserId,
             username: telegramUsername || user.username,
@@ -372,41 +388,32 @@ export class TelegramService implements OnModuleInit {
         return this.handleRegisteredUser(ctx, user);
       }
 
-      const stagingRow = await this.prisma.tgUser.findUnique({
-        where: { telegramId: telegramUserId },
+      const otherTg = await this.prisma.tgUser.findFirst({
+        where: {
+          number: canonical,
+          telegramId: { not: telegramUserId },
+        },
       });
-      const pending = await this.prisma.pendingSitePhone.findUnique({
-        where: { number: phoneNumber },
-      });
-      const pendingValid =
-        pending != null && pending.expiresAt > new Date();
-
-      if (!pendingValid && !stagingRow) {
+      if (otherTg) {
         await ctx.reply(
-          "📱 Avval *nuvita.uz* saytida *Kirish* sahifasida telefon raqamingizni kiriting, keyin bu yerga qaytib /start bosing.",
-          { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
+          "❌ Bu telefon raqami boshqa Telegram akkauntda ro'yxatdan o'tish uchun ishlatilmoqda.",
+          Markup.removeKeyboard(),
         );
         return;
-      }
-
-      if (pendingValid) {
-        await this.prisma.pendingSitePhone
-          .delete({ where: { number: phoneNumber } })
-          .catch(() => undefined);
       }
 
       await this.prisma.tgUser.upsert({
         where: { telegramId: telegramUserId },
         create: {
           telegramId: telegramUserId,
-          number: phoneNumber,
+          number: canonical,
           username: telegramUsername,
           fullName: telegramFullName,
           loginOtp: otp,
           loginOtpExpiresAt: otpExpires,
         },
         update: {
-          number: phoneNumber,
+          number: canonical,
           username: telegramUsername,
           fullName: telegramFullName,
           loginOtp: otp,

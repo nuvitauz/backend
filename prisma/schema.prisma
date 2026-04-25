@@ -37,8 +37,8 @@ model User {
 }
 
 /**
- * Telegramda kontakt: `users`da yo'q bo'lsa vaqtincha yozuv.
- * Brauzer kirish OTP: `login_otp` + `login_otp_expires_at` (2 daq).
+ * Botda /start → kontakt: `users`da yo'q bo'lguncha vaqtincha yozuv + sayt uchun OTP.
+ * Sayt telefon+kod mos bo'lsa `users` yaratiladi va bu qator o'chiriladi.
  */
 model TgUser {
   id                Int       @id @default(autoincrement())
@@ -52,17 +52,6 @@ model TgUser {
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
   @@map("tg_users")
-}
-
-/** Saytda yangi raqam kiritilgach (kirish → yangi akkaunt); bot kontakti shu raqam bilan mos bo'lishi kerak */
-model PendingSitePhone {
-  id        Int      @id @default(autoincrement())
-  number    String   @unique
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@index([expiresAt])
-  @@map("pending_site_phones")
 }
 
 // Brauzer/TG orqali bir martalik tokenlar (link_, pw_, ro'yxat) — xotira o'rniga DB, server restartda yo'qolmaydi

@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
+import { normalizeUzbekPhone } from '../common/uzbek-phone';
 
 interface TelegramUser {
   id: number;
@@ -26,40 +27,16 @@ export class AuthService {
   ) {}
 
   /**
-   * Yangi akkaunt: saytda raqam kiritilgach chaqiriladi — bot kontakti bilan moslash uchun.
-   */
-  async registerPendingSitePhone(raw: string) {
-    const number = this.normalizeUzbekPhone(raw);
-    if (!number) {
-      throw new BadRequestException(
-        "Telefon +998XXXXXXXXX ko'rinishida bo'lishi kerak",
-      );
-    }
-    const user = await this.prisma.user.findUnique({ where: { number } });
-    if (user) {
-      throw new BadRequestException('Bu raqam allaqachon ro\'yxatdan o\'tgan');
-    }
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    await this.prisma.pendingSitePhone.upsert({
-      where: { number },
-      create: { number, expiresAt },
-      update: { expiresAt },
-    });
-    return { ok: true as const };
-  }
-
-  private normalizeUzbekPhone(raw: string): string | null {
-    const d = (raw || '').replace(/\D/g, '');
-    if (d.length === 12 && d.startsWith('998')) return `+${d}`;
-    if (d.length === 9) return `+998${d}`;
-    return null;
-  }
-
-  /**
    * Kirish UI: telefon kiritilgach qaysi oqim — mavjud (TG bog'langan), TG yo'q, yoki yangi.
    */
   async checkPhone(number: string) {
-    const user = await this.prisma.user.findUnique({ where: { number } });
+    const n = normalizeUzbekPhone(number);
+    if (!n) {
+      throw new BadRequestException(
+        "Telefon +998XXXXXXXXX yoki 9 xonali mahalliy formatda bo'lishi kerak",
+      );
+    }
+    const user = await this.prisma.user.findUnique({ where: { number: n } });
     if (user) {
       if (user.userId) {
         return { flow: 'EXISTING_LINKED' as const };
@@ -71,10 +48,14 @@ export class AuthService {
 
   /** Brauzer kirish: telefon + bot yuborgan 6 xonali kod (`loginOtp`). */
   async login(number: string, passwordString: string) {
+    const n = normalizeUzbekPhone(number);
+    if (!n) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
     const code = (passwordString || '').trim();
     const now = new Date();
 
-    const user = await this.prisma.user.findUnique({ where: { number } });
+    const user = await this.prisma.user.findUnique({ where: { number: n } });
 
     if (user) {
       if (
@@ -93,7 +74,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const tg = await this.prisma.tgUser.findUnique({ where: { number } });
+    const tg = await this.prisma.tgUser.findUnique({ where: { number: n } });
     if (
       tg &&
       tg.loginOtp &&
@@ -110,9 +91,6 @@ export class AuthService {
         },
       });
       await this.prisma.tgUser.delete({ where: { id: tg.id } });
-      await this.prisma.pendingSitePhone
-        .deleteMany({ where: { number: tg.number } })
-        .catch(() => undefined);
       return this.generateTokens(
         created.id,
         created.number || String(created.id),
