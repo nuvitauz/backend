@@ -87,36 +87,12 @@ export class TelegramService implements OnModuleInit {
       where: { loginOtpExpiresAt: { lt: cutoff } },
       data: { loginOtp: null, loginOtpExpiresAt: null },
     });
-    await this.prisma.authFlowToken.deleteMany({
-      where: {
-        type: AuthTokenType.TG_WEB_OTP,
-        expiresAt: { lt: cutoff },
-      },
+    await this.prisma.tgUser.updateMany({
+      where: { loginOtpExpiresAt: { lt: cutoff } },
+      data: { loginOtp: null, loginOtpExpiresAt: null },
     });
-  }
-
-  /** TgUser telefoni uchun brauzer OTP — telefon `tg_users`da noyob, `telegram_id` bu yerda kerak emas */
-  private async upsertTgWebLoginOtp(
-    phoneNumber: string,
-    otp: string,
-    otpExpires: Date,
-  ): Promise<void> {
-    await this.prisma.authFlowToken.updateMany({
-      where: {
-        type: AuthTokenType.TG_WEB_OTP,
-        phone: phoneNumber,
-        consumedAt: null,
-      },
-      data: { consumedAt: new Date() },
-    });
-    await this.prisma.authFlowToken.create({
-      data: {
-        token: 'tgotp_' + this.generateToken(),
-        type: AuthTokenType.TG_WEB_OTP,
-        phone: phoneNumber,
-        expiresAt: otpExpires,
-        otpCode: otp,
-      },
+    await this.prisma.pendingSitePhone.deleteMany({
+      where: { expiresAt: { lt: cutoff } },
     });
   }
 
@@ -252,12 +228,16 @@ export class TelegramService implements OnModuleInit {
         return this.handleRegisteredUser(ctx, user);
       }
 
-      // User not registered - ask for contact
       await ctx.reply(
-        "👋 Assalomu alaykum!\n\n🏥 Nuvita online dorixonasiga xush kelibsiz!\n\nTizimdan foydalanish uchun telefon raqamingizni yuboring:",
-        Markup.keyboard([
-          [Markup.button.contactRequest('📱 Telefon raqamni yuborish')]
-        ]).resize().oneTime()
+        "👋 *Nuvita*\n\nYangi akkaunt: avval *nuvita.uz* → *Kirish* da telefon raqamingizni kiriting, keyin bu yerga qaytib /start bosing va kontaktingizni yuboring.",
+        {
+          parse_mode: 'Markdown',
+          ...Markup.keyboard([
+            [Markup.button.contactRequest('📱 Telefon raqamni yuborish')],
+          ])
+            .resize()
+            .oneTime(),
+        },
       );
     });
 
@@ -392,6 +372,29 @@ export class TelegramService implements OnModuleInit {
         return this.handleRegisteredUser(ctx, user);
       }
 
+      const stagingRow = await this.prisma.tgUser.findUnique({
+        where: { telegramId: telegramUserId },
+      });
+      const pending = await this.prisma.pendingSitePhone.findUnique({
+        where: { number: phoneNumber },
+      });
+      const pendingValid =
+        pending != null && pending.expiresAt > new Date();
+
+      if (!pendingValid && !stagingRow) {
+        await ctx.reply(
+          "📱 Avval *nuvita.uz* saytida *Kirish* sahifasida telefon raqamingizni kiriting, keyin bu yerga qaytib /start bosing.",
+          { parse_mode: 'Markdown', ...Markup.removeKeyboard() },
+        );
+        return;
+      }
+
+      if (pendingValid) {
+        await this.prisma.pendingSitePhone
+          .delete({ where: { number: phoneNumber } })
+          .catch(() => undefined);
+      }
+
       await this.prisma.tgUser.upsert({
         where: { telegramId: telegramUserId },
         create: {
@@ -399,14 +402,17 @@ export class TelegramService implements OnModuleInit {
           number: phoneNumber,
           username: telegramUsername,
           fullName: telegramFullName,
+          loginOtp: otp,
+          loginOtpExpiresAt: otpExpires,
         },
         update: {
           number: phoneNumber,
           username: telegramUsername,
           fullName: telegramFullName,
+          loginOtp: otp,
+          loginOtpExpiresAt: otpExpires,
         },
       });
-      await this.upsertTgWebLoginOtp(phoneNumber, otp, otpExpires);
 
       try {
         await this.sendWebLoginOtpDm(telegramUserId, otp);
@@ -462,7 +468,13 @@ export class TelegramService implements OnModuleInit {
         where: { telegramId: tgId },
       });
       if (tg) {
-        await this.upsertTgWebLoginOtp(tg.number, otp, otpExpires);
+        await this.prisma.tgUser.update({
+          where: { id: tg.id },
+          data: {
+            loginOtp: otp,
+            loginOtpExpiresAt: otpExpires,
+          },
+        });
         try {
           await this.sendWebLoginOtpDm(tgId, otp);
         } catch (e) {

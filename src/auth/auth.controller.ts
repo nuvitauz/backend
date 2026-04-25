@@ -10,6 +10,12 @@ export class AuthController {
     return this.authService.checkPhone(number);
   }
 
+  /** Yangi akkaunt: saytda telefon kiritilgach (botdan oldin) */
+  @Post('pending-site-phone')
+  pendingSitePhone(@Body('number') number: string) {
+    return this.authService.registerPendingSitePhone(number);
+  }
+
   @Post('login')
   login(@Body() body: { number: string; password: string }) {
     return this.authService.login(body.number, body.password);

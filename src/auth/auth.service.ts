@@ -3,11 +3,11 @@ import {
   UnauthorizedException,
   HttpException,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
-import { AuthTokenType } from '../../generated/prisma';
 
 interface TelegramUser {
   id: number;
@@ -24,6 +24,36 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
   ) {}
+
+  /**
+   * Yangi akkaunt: saytda raqam kiritilgach chaqiriladi — bot kontakti bilan moslash uchun.
+   */
+  async registerPendingSitePhone(raw: string) {
+    const number = this.normalizeUzbekPhone(raw);
+    if (!number) {
+      throw new BadRequestException(
+        "Telefon +998XXXXXXXXX ko'rinishida bo'lishi kerak",
+      );
+    }
+    const user = await this.prisma.user.findUnique({ where: { number } });
+    if (user) {
+      throw new BadRequestException('Bu raqam allaqachon ro\'yxatdan o\'tgan');
+    }
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await this.prisma.pendingSitePhone.upsert({
+      where: { number },
+      create: { number, expiresAt },
+      update: { expiresAt },
+    });
+    return { ok: true as const };
+  }
+
+  private normalizeUzbekPhone(raw: string): string | null {
+    const d = (raw || '').replace(/\D/g, '');
+    if (d.length === 12 && d.startsWith('998')) return `+${d}`;
+    if (d.length === 9) return `+998${d}`;
+    return null;
+  }
 
   /**
    * Kirish UI: telefon kiritilgach qaysi oqim — mavjud (TG bog'langan), TG yo'q, yoki yangi.
@@ -64,34 +94,29 @@ export class AuthService {
     }
 
     const tg = await this.prisma.tgUser.findUnique({ where: { number } });
-    if (tg) {
-      const challenge = await this.prisma.authFlowToken.findFirst({
-        where: {
-          type: AuthTokenType.TG_WEB_OTP,
-          phone: number,
-          otpCode: code,
-          consumedAt: null,
-          expiresAt: { gt: now },
+    if (
+      tg &&
+      tg.loginOtp &&
+      tg.loginOtpExpiresAt &&
+      tg.loginOtpExpiresAt > now &&
+      code === tg.loginOtp
+    ) {
+      const created = await this.prisma.user.create({
+        data: {
+          number: tg.number,
+          userId: tg.telegramId,
+          username: tg.username,
+          fullName: tg.fullName,
         },
       });
-      if (challenge) {
-        const created = await this.prisma.user.create({
-          data: {
-            number: tg.number,
-            userId: tg.telegramId,
-            username: tg.username,
-            fullName: tg.fullName,
-          },
-        });
-        await this.prisma.tgUser.delete({ where: { id: tg.id } });
-        await this.prisma.authFlowToken.deleteMany({
-          where: { type: AuthTokenType.TG_WEB_OTP, phone: tg.number },
-        });
-        return this.generateTokens(
-          created.id,
-          created.number || String(created.id),
-        );
-      }
+      await this.prisma.tgUser.delete({ where: { id: tg.id } });
+      await this.prisma.pendingSitePhone
+        .deleteMany({ where: { number: tg.number } })
+        .catch(() => undefined);
+      return this.generateTokens(
+        created.id,
+        created.number || String(created.id),
+      );
     }
 
     throw new UnauthorizedException('Invalid credentials');
